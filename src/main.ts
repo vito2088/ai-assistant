@@ -5,6 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
 import './style.css';
 import { Tools } from './tools';
+import { featureGroups, parseVisibility, groupState, setFeatureVisible, visiblePages, availablePage } from './feature-visibility';
 
 type Mode = 'expanded' | 'icon' | 'compact';
 type Page = 'document' | 'workbench' | 'tools' | 'settings';
@@ -20,6 +21,8 @@ type ComputerDraft = { id?: string; name: string; platform: Platform };
 
 const windowRef = getCurrentWindow();
 const app = document.querySelector<HTMLDivElement>('#app')!;
+let visibility = parseVisibility(null);
+let savingVisibility = false;
 let mode: Mode = 'expanded';
 let page: Page = 'document';
 let documentSection: DocumentSection = 'todo';
@@ -113,6 +116,7 @@ async function refresh() {
 }
 
 async function applyMode(next: Mode, persist = true) {
+  if (next === 'compact' && !visibility.todo) next = 'expanded';
   if (next !== 'compact') compactTodoOpen = false;
   mode = next;
   const size = next === 'expanded' ? [430, 620] : next === 'compact' ? [360, 360] : [184, 184];
@@ -179,8 +183,8 @@ function notesPage() {
 
 function documentPage() {
   return `<div class="document-page"><nav class="document-tabs" aria-label="文档子栏目">
-    <button class="document-tab ${documentSection === 'todo' ? 'selected' : ''}" data-action="document-section" data-section="todo" aria-current="${documentSection === 'todo' ? 'page' : 'false'}">待办</button>
-    <button class="document-tab ${documentSection === 'note' ? 'selected' : ''}" data-action="document-section" data-section="note" aria-current="${documentSection === 'note' ? 'page' : 'false'}">速记</button>
+    ${visibility.todo ? `<button class="document-tab ${documentSection === 'todo' ? 'selected' : ''}" data-action="document-section" data-section="todo" aria-current="${documentSection === 'todo' ? 'page' : 'false'}">待办</button>` : ''}
+    ${visibility.note ? `<button class="document-tab ${documentSection === 'note' ? 'selected' : ''}" data-action="document-section" data-section="note" aria-current="${documentSection === 'note' ? 'page' : 'false'}">速记</button>` : ''}
   </nav>${documentSection === 'todo' ? todoPage() : notesPage()}</div>`;
 }
 
@@ -194,7 +198,7 @@ function workbenchPage() {
       ${computerDraft.id ? '' : `<select id="computer-platform" aria-label="电脑系统"><option value="windows" ${computerDraft.platform === 'windows' ? 'selected' : ''}>Windows</option><option value="macos" ${computerDraft.platform === 'macos' ? 'selected' : ''}>macOS</option><option value="linux" ${computerDraft.platform === 'linux' ? 'selected' : ''}>Linux</option></select>`}
       <button type="submit" class="primary small">${computerDraft.id ? '保存名称' : '添加'}</button></form>` : ''}
     ${selected ? `<div class="computer-toolbar"><span>${platformName(selected.platform)} · ${selected.isCurrent ? '当前电脑' : '待绑定到另一台电脑'}</span><div><button data-action="rename-computer" title="重命名">改名</button>${selected.isCurrent ? '' : `<button data-action="delete-computer" title="删除电脑档案">删除</button>`}</div></div>
-    <nav class="document-tabs workbench-tabs" aria-label="工作台子栏目"><button class="document-tab ${workbenchSection === 'project' ? 'selected' : ''}" data-action="workbench-section" data-section="project">项目</button><button class="document-tab ${workbenchSection === 'app' ? 'selected' : ''}" data-action="workbench-section" data-section="app">应用</button>${selected.isCurrent ? `<button class="workbench-add" data-action="new-entry" data-kind="${workbenchSection}" title="添加${workbenchSection === 'project' ? '项目' : '应用'}" aria-label="添加${workbenchSection === 'project' ? '项目' : '应用'}">添加${workbenchSection === 'project' ? '项目' : '应用'}</button>` : ''}</nav>
+    <nav class="document-tabs workbench-tabs" aria-label="工作台子栏目">${visibility.project ? `<button class="document-tab ${workbenchSection === 'project' ? 'selected' : ''}" data-action="workbench-section" data-section="project">项目</button>` : ''}${visibility.app ? `<button class="document-tab ${workbenchSection === 'app' ? 'selected' : ''}" data-action="workbench-section" data-section="app">应用</button>` : ''}${selected.isCurrent ? `<button class="workbench-add" data-action="new-entry" data-kind="${workbenchSection}" title="添加${workbenchSection === 'project' ? '项目' : '应用'}" aria-label="添加${workbenchSection === 'project' ? '项目' : '应用'}">添加${workbenchSection === 'project' ? '项目' : '应用'}</button>` : ''}</nav>
     ${selected.isCurrent ? entryPage(workbenchSection) : `<section class="remote-computer"><strong>这台电脑尚未绑定</strong><p>项目与应用的路径属于各自的电脑。以后开启同步后，可在“${esc(selected.name)}”上绑定此档案并添加入口。</p></section>`}` : '<div class="empty"><strong>还没有电脑档案</strong></div>'}
   </div>`;
 }
@@ -225,18 +229,29 @@ function entryForm() {
   </form>`;
 }
 
+function featureSettings() {
+  return `<div class="settings-card feature-settings"><div><strong id="feature-settings-title">功能显示</strong><p>勾选需要显示的功能，自动保存；隐藏不删除数据。</p></div>
+    <ul class="feature-tree" aria-labelledby="feature-settings-title">${featureGroups.map(group => {
+      const state = groupState(visibility, group.id);
+      return `<li><label class="feature-parent"><input type="checkbox" data-feature="${group.id}" ${state.checked ? 'checked' : ''} ${savingVisibility ? 'disabled' : ''}><span>${group.label}</span><small>${group.children.filter(child => visibility[child.id]).length}/${group.children.length}</small></label>
+        <ul>${group.children.map(child => `<li><label><input type="checkbox" data-feature="${child.id}" ${visibility[child.id] ? 'checked' : ''} ${savingVisibility ? 'disabled' : ''}><span>${child.label}</span></label></li>`).join('')}</ul></li>`;
+    }).join('')}</ul><p class="feature-settings-note">设置始终显示，可随时恢复隐藏的功能。</p>
+  </div>`;
+}
+
 function settingsPage() {
-  return `<section class="page-body">
+  return `<section class="page-body settings-page">
     <div class="settings-card"><div><strong>开机启动</strong><p>登录系统后自动打开小助手</p></div><label class="switch"><input type="checkbox" id="autostart-toggle" ${autostart ? 'checked' : ''} ${updatingAutostart ? 'disabled' : ''} /><span></span></label></div>
     <div class="settings-card"><div><strong>固定并置顶</strong><p>锁定位置，显示在普通窗口上方</p></div><label class="switch"><input type="checkbox" id="pin-toggle" ${pinned ? 'checked' : ''} /><span></span></label></div>
+    ${featureSettings()}
     ${tools.settingsView()}
     <div class="settings-note">数据保存在本机。最小化后可点击任务栏图标恢复，也可通过系统托盘显示或退出应用。</div>
   </section>`;
 }
 
 function expanded() {
-  return `<div class="shell expanded-shell">${topBar()}<nav class="tabs">
-    ${(['document', 'workbench', 'tools', 'settings'] as Page[]).map(p => `<button class="tab ${page === p ? 'selected' : ''}" data-action="page" data-page="${p}">${({ document: '文档', workbench: '工作台', tools: '工具', settings: '设置' } as Record<Page, string>)[p]}${p === 'tools' ? `<span class="tools-recording-dot recording-dot" ${tools.recording ? '' : 'hidden'} aria-label="正在录屏"></span>` : ''}</button>`).join('')}
+  return `<div class="shell expanded-shell">${topBar()}<nav class="tabs" style="grid-template-columns:repeat(${visiblePages(visibility).length},minmax(0,1fr))">
+    ${visiblePages(visibility).map(p => `<button class="tab ${page === p ? 'selected' : ''}" data-action="page" data-page="${p}">${({ document: '文档', workbench: '工作台', tools: '工具', settings: '设置' } as Record<Page, string>)[p]}${p === 'tools' ? `<span class="tools-recording-dot recording-dot" ${tools.recording ? '' : 'hidden'} aria-label="正在录屏"></span>` : ''}</button>`).join('')}
   </nav>${page === 'document' ? documentPage() : page === 'workbench' ? workbenchPage() : page === 'tools' ? tools.view() : settingsPage()}<footer class="footer"><span>DESKTOP ASSISTANT</span><span>v0.1</span></footer></div>`;
 }
 
@@ -244,9 +259,9 @@ function iconView() {
   return `<div class="mini-stage"><button class="mini-orb" data-action="expand" title="点击展开，拖动可移动小图标" aria-label="点击展开，拖动可移动小图标">${svgIcon('sparkle')}</button>
     <div class="orbit-actions">
       <button class="orbit up" data-action="expand" title="展开">${svgIcon('expand')}<small>展开</small></button>
-      <button class="orbit right" data-action="new-todo" title="新增待办">${svgIcon('add')}<small>新增</small></button>
+      ${visibility.todo ? `<button class="orbit right" data-action="new-todo" title="新增待办">${svgIcon('add')}<small>新增</small></button>` : ''}
       <button class="orbit down ${pinned ? 'on' : ''}" data-action="pin" title="${pinned ? '解除固定' : '固定'}" aria-pressed="${pinned}">${svgIcon('pin')}<small>固定</small></button>
-      <button class="orbit left" data-action="compact" title="紧凑列表">${svgIcon('list')}<small>紧凑</small></button>
+      ${visibility.todo ? `<button class="orbit left" data-action="compact" title="紧凑列表">${svgIcon('list')}<small>紧凑</small></button>` : ''}
     </div>
   </div>`;
 }
@@ -260,8 +275,25 @@ function compactView() {
   </div>`;
 }
 
+function normalizeNavigation() {
+  page = availablePage(visibility, page);
+  if (!visibility[documentSection]) documentSection = visibility.todo ? 'todo' : 'note';
+  if (!visibility[workbenchSection]) workbenchSection = visibility.project ? 'project' : 'app';
+  tools.setVisibleSections(featureGroups[2].children.filter(child => visibility[child.id]).map(child => child.id));
+}
+
 function render() {
+  normalizeNavigation();
+  const settingsScroll = app.querySelector('.settings-page')?.scrollTop ?? 0;
+  const focusedFeature = document.activeElement instanceof HTMLInputElement ? document.activeElement.dataset.feature : undefined;
   app.innerHTML = (mode === 'expanded' ? expanded() : mode === 'compact' ? compactView() : iconView()) + (notice ? `<div class="toast" role="status">${esc(notice)}</div>` : '');
+  for (const group of featureGroups) {
+    const input = app.querySelector<HTMLInputElement>(`[data-feature="${group.id}"]`);
+    if (input) input.indeterminate = groupState(visibility, group.id).partial;
+  }
+  const settingsBody = app.querySelector('.settings-page');
+  if (settingsBody) settingsBody.scrollTop = settingsScroll;
+  if (focusedFeature) app.querySelector<HTMLInputElement>(`[data-feature="${focusedFeature}"]`)?.focus({ preventScroll: true });
   const dialog = app.querySelector<HTMLDialogElement>('.compact-todo-dialog');
   if (dialog) { dialog.showModal(); dialog.querySelector<HTMLInputElement>('input')?.focus(); }
 }
@@ -352,6 +384,7 @@ async function runAction(action: string, button: HTMLElement) {
     case 'minimize': await windowRef.minimize(); break;
     case 'quit': await tools.beforeQuit(); await invoke('quit_app'); break;
     case 'new-todo':
+      if (!visibility.todo) break;
       if (mode === 'compact') { compactTodoOpen = true; todoError = ''; render(); break; }
       page = 'document'; documentSection = 'todo'; todoError = '';
       if (mode !== 'expanded') await applyMode('expanded'); else render();
@@ -585,6 +618,23 @@ app.addEventListener('input', event => {
 app.addEventListener('change', async event => {
   const input = event.target as HTMLInputElement;
   tools.input(input);
+  if (input.dataset.feature) {
+    if (savingVisibility) { render(); return; }
+    const feature = input.dataset.feature;
+    const next = setFeatureVisible(visibility, feature, input.checked);
+    savingVisibility = true;
+    app.querySelectorAll<HTMLInputElement>('[data-feature]').forEach(control => { control.disabled = true; });
+    try {
+      await saveSetting('feature_visibility', JSON.stringify(next));
+      visibility = next;
+    } catch (error) { toast(`保存功能显示失败：${errorText(error)}`); }
+    finally {
+      savingVisibility = false;
+      render();
+      app.querySelector<HTMLInputElement>(`[data-feature="${feature}"]`)?.focus({ preventScroll: true });
+    }
+    return;
+  }
   if (input.id === 'computer-platform') {
     if (computerDraft) computerDraft.platform = input.value as Platform;
     return;
@@ -616,8 +666,8 @@ windowRef.onMoved(({ payload }) => {
 
 async function init() {
   try {
-    const [savedMode, savedPage, savedSection, savedWorkbenchSection, savedComputerId, savedPinned, x, y, startup] = await Promise.all([
-      setting('mode'), setting('page'), setting('document_section'), setting('workbench_section'), setting('selected_computer_id'), setting('pinned'), setting('window_x'), setting('window_y'), isEnabled().catch(() => false),
+    const [savedMode, savedPage, savedSection, savedWorkbenchSection, savedComputerId, savedPinned, x, y, startup, savedVisibility] = await Promise.all([
+      setting('mode'), setting('page'), setting('document_section'), setting('workbench_section'), setting('selected_computer_id'), setting('pinned'), setting('window_x'), setting('window_y'), isEnabled().catch(() => false), setting('feature_visibility'),
     ]);
     mode = savedMode === 'icon' ? 'icon' : savedMode === 'compact' || savedMode === 'single' ? 'compact' : 'expanded';
     page = savedPage === 'project' || savedPage === 'software' || savedPage === 'workbench' ? 'workbench' : savedPage === 'settings' ? 'settings' : savedPage === 'tools' ? 'tools' : 'document';
@@ -626,6 +676,8 @@ async function init() {
     selectedComputerId = savedComputerId ?? '';
     pinned = savedPinned === 'true';
     autostart = startup;
+    visibility = parseVisibility(savedVisibility);
+    normalizeNavigation();
     await applyMode(mode, false);
     if (savedMode === 'single') await saveSetting('mode', 'compact');
     if (savedPage === 'todo') await saveSetting('page', 'document');

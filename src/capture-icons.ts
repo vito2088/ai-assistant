@@ -1,0 +1,30 @@
+const paths: Record<string, string> = {
+  full: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><rect x="7" y="7" width="10" height="10" rx="1"/>',
+  last: '<path d="M3 10a9 9 0 1 1 2 8M3 4v6h6m3-3v5l3 2"/>',
+  select: '<path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4"/><path d="m9 9 8 3-4 1-1 4Z"/>',
+  pen: '<path d="m4 20 4-1L20 7a2.1 2.1 0 0 0-3-3L5 16l-1 4Zm11-14 3 3M5 16l3 3"/>',
+  arrow: '<path d="M5 19 19 5M8 5h11v11"/>',
+  rectangle: '<rect x="4" y="5" width="16" height="14" rx="2"/>',
+  ellipse: '<ellipse cx="12" cy="12" rx="9" ry="7"/>',
+  text: '<path d="M4 7V4h16v3M12 4v16m-4 0h8"/>',
+  mosaic: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16m6-16v16M4 9h16M4 15h16"/><path d="M4 4h5v5H4zm5 5h6v6H9zm6 6h5v5h-5z" fill="currentColor" stroke="none"/>',
+  step: '<circle cx="12" cy="12" r="9"/><path d="m10 9 2-2v10m-2 0h4"/>',
+  undo: '<path d="m8 4-5 5 5 5M3 9h11a6 6 0 0 1 0 12h-3"/>',
+  redo: '<path d="m16 4 5 5-5 5m5-5H10a6 6 0 0 0 0 12h3"/>',
+  pin: '<path d="M9 3h6l-1 5 3 4v2H7v-2l3-4-1-5Zm3 11v7"/>',
+  copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/>',
+  cancel: '<path d="m6 6 12 12M6 18 18 6"/>',
+  done: '<path d="m5 12 4 4L19 6"/>',
+  play: '<path d="m8 4 12 8-12 8Z"/>',
+  pause: '<path d="M8 5v14M16 5v14" stroke-width="3"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
+  drag: '<path d="M8 5h.01M16 5h.01M8 12h.01M16 12h.01M8 19h.01M16 19h.01" stroke-width="3"/>',
+  folder: '<path d="M3 8V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2M3 8h5l2 2h11l-3 10H3Z"/>',
+  clear: '<path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/>',
+  save: '<path d="M5 3h12l4 4v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M7 3v6h9V3M7 21v-8h10v8"/>',
+  preview: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+  delete: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
+};
+export function captureIcon(name: string) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] ?? paths.done}</svg>`;
+}

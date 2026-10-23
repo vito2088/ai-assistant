@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { join } from '@tauri-apps/api/path';
 import { save } from '@tauri-apps/plugin-dialog';
 import './capture-pin.css';
+import { captureIcon } from './capture-icons';
 
 const windowRef = getCurrentWindow();
 const status = document.querySelector<HTMLParagraphElement>('#status')!;
@@ -10,6 +11,12 @@ const picture = document.querySelector<HTMLImageElement>('#image')!;
 const pinButton = document.querySelector<HTMLButtonElement>('#pin')!;
 const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
 let blob: Blob | null = null, url = '', pinned = true, busy = false;
+pinButton.innerHTML = captureIcon('pin');
+saveButton.innerHTML = captureIcon('save');
+document.querySelector('#close')!.innerHTML = captureIcon('cancel');
+document.querySelectorAll('nav button').forEach(button => button.classList.add('capture-icon-button'));
+function updatePinLabel() { const label = pinned ? '取消置顶' : '固定置顶'; pinButton.title = label; pinButton.setAttribute('aria-label', label); }
+updatePinLabel();
 function report(error: unknown) { status.hidden = false; status.textContent = String(error); }
 async function close() { if (!busy) await invoke('close_pinned_capture'); }
 document.querySelector('#close')!.addEventListener('click', () => { void close().catch(report); });
@@ -19,7 +26,7 @@ picture.addEventListener('contextmenu', e => e.preventDefault());
 pinButton.addEventListener('click', () => {
   void (async () => {
     pinButton.disabled = true;
-    try { await windowRef.setAlwaysOnTop(!pinned); pinned = !pinned; pinButton.textContent = pinned ? '已置顶' : '置顶'; pinButton.setAttribute('aria-pressed', String(pinned)); }
+    try { await windowRef.setAlwaysOnTop(!pinned); pinned = !pinned; updatePinLabel(); pinButton.setAttribute('aria-pressed', String(pinned)); }
     finally { pinButton.disabled = false; }
   })().catch(report);
 });

@@ -516,7 +516,7 @@ fn get_setting(app: AppHandle, key: String) -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String> {
-    if !["capture_preferences", "mode", "page", "document_section", "workbench_section", "selected_computer_id", "pinned", "window_x", "window_y"].contains(&key.as_str()) {
+    if !["feature_visibility", "capture_preferences", "mode", "page", "document_section", "workbench_section", "selected_computer_id", "pinned", "window_x", "window_y"].contains(&key.as_str()) {
         return Err("不支持的设置".into());
     }
     db(&app)?

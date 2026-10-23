@@ -237,8 +237,29 @@ button,input,select,textarea{font:inherit}
 .calculator-history button{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border:0;border-bottom:1px solid #eeebf3;background:transparent;text-align:left;font-size:11px;color:#8b8fa1}
 .calculator-history span{overflow-wrap:anywhere;min-width:0}
 .calculator-history strong{font-weight:600;color:#7164d7;white-space:nowrap}
-.capture-settings{display:flex;flex-direction:column;gap:14px;padding:18px 0;border-top:1px solid var(--border,#e5e7eb)}
-.capture-directory{display:flex;align-items:center;gap:6px;min-width:0}.capture-directory input{min-width:0;flex:1;height:34px;font-size:12px}.capture-directory button{flex-shrink:0;height:34px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center}
+.capture-settings{display:flex;flex-direction:column;gap:16px;padding:16px;background:#fff;border:1px solid #efedf0;border-radius:13px;margin-top:2px}
+.capture-settings>strong{font-size:13px;color:#343a4b}.capture-settings>.tool-hint{margin:-9px 0 0;font-size:11px;line-height:1.6;color:#999eaa}.capture-settings .tool-field{margin:0;font-size:11px;font-weight:600;gap:8px}.capture-settings .tool-checkbox{font-size:11px;margin:0}
+.capture-directory{display:flex;align-items:center;gap:6px;min-width:0}
+.capture-directory input{min-width:0;flex:1;height:38px;padding:0 10px;border:1px solid #e0ddeb;border-radius:9px;background:#fbfaf8;color:#343a4b;font-size:12px;font-weight:400;text-overflow:ellipsis;outline:none}
+.capture-directory input::placeholder{color:#a1a5b2}.capture-directory input:focus{border-color:#9d94df;background:#fff}
+.capture-directory .capture-icon-button{width:38px;height:38px;min-height:38px;padding:0;border:1px solid #e0ddeb;background:#fbfaf8}
+.capture-directory .directory-browse{background:#f0ecfc;border-color:#e4ddf4;color:#796bd3}.capture-directory .capture-icon-button:hover{background:#eae3fc;border-color:#c8bbfa;color:#6555c9}.capture-directory .capture-icon-button:disabled{background:#fbfaf8;border-color:#e0ddeb;color:#a1a5b2;opacity:.45}
 .capture-settings-row{display:flex;gap:12px}.capture-settings-row>label,.capture-settings-row>button{flex:1;min-width:0}.capture-settings-row>button{height:36px}
 .capture-drafts{border-top:1px solid var(--border,#e5e7eb);padding-top:16px;margin-top:12px}.capture-draft{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border,#e5e7eb);padding:12px 0}.capture-draft>div{min-width:0;flex:1;display:flex;flex-direction:column;gap:4px;font-size:12px}.capture-draft small{color:#8793a6}.capture-draft button{height:30px;padding:0 8px;font-size:12px}
 .capture-result{background:#101827;border-radius:8px;overflow:hidden;margin:12px 0}.capture-result video,.capture-result img{display:block;width:100%;max-height:220px;object-fit:contain}
+.capture-panel .capture-start{width:44px;height:44px;min-height:44px;align-self:flex-start;padding:0;border-radius:12px}.capture-panel .capture-start svg{width:21px;height:21px}
+.capture-action-row{display:flex;align-items:center;gap:8px;margin:4px 0 12px}.capture-draft .capture-icon-button{height:32px;min-height:32px;width:32px;padding:0}.tool-output .capture-icon-button{padding:0}
+.settings-page{overflow-y:auto;scrollbar-width:thin;padding-bottom:18px}.settings-page>*{flex-shrink:0}
+.feature-settings{display:block;padding:14px 16px}
+.feature-tree,.feature-tree ul{list-style:none;margin:0;padding:0}
+.feature-tree{margin-top:12px}
+.feature-tree>li+li{margin-top:6px;padding-top:6px;border-top:1px solid #f0edf5}
+.feature-tree label{display:flex;align-items:center;gap:9px;min-height:32px;padding:4px 7px;border-radius:7px;font-size:12px;cursor:pointer;color:#606477}
+.feature-tree label:hover{background:#f5f3fc}
+.feature-tree input{appearance:auto;width:16px;height:16px;flex:none;accent-color:#7164d7;margin:0;cursor:pointer}
+.feature-tree input:focus-visible{outline:2px solid #9b8fe4;outline-offset:3px}
+.feature-tree input:disabled{cursor:wait}
+.feature-tree .feature-parent{font-weight:600;color:#454658}
+.feature-parent small{margin-left:auto;color:#9a96aa;font-size:10px;font-weight:400;font-variant-numeric:tabular-nums}
+.feature-tree ul{margin:2px 0 3px 14px;padding-left:15px;border-left:1px solid #e6e1f2}
+.feature-settings .feature-settings-note{margin-top:10px;font-size:11px;line-height:1.6}

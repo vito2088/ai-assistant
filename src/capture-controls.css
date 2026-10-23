@@ -1,0 +1,25 @@
+:root {
+  --capture-surface: #fbfaf8;
+  --capture-border: #e0ddeb;
+  --capture-text: #343a4b;
+  --capture-muted: #71778a;
+  --capture-accent: #7164d7;
+  --capture-tint: #ece9fb;
+}
+.capture-icon-button {
+  width: 34px; height: 34px; min-height: 34px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: 1px solid transparent; border-radius: 9px;
+  background: transparent; color: var(--capture-muted); cursor: pointer;
+  box-shadow: none; transition: background .12s, color .12s, border-color .12s;
+}
+.capture-icon-button svg { display: block; width: 18px; height: 18px; pointer-events: none; flex: none; }
+.capture-icon-button:hover { background: var(--capture-tint); color: #6555c9; }
+.capture-icon-button.active, .capture-icon-button[aria-pressed=true] { background: #e4ddff; color: #5746c3; border-color: #c8bbfa; }
+.capture-icon-button.primary { background: var(--capture-accent); color: white; }
+.capture-icon-button.primary:hover { background: #6255cc; }
+.capture-icon-button.danger:hover { background: #fcecef; color: #c45d72; }
+.capture-icon-button:focus-visible { outline: 2px solid #8a8df1; outline-offset: 2px; }
+.capture-icon-button:disabled { opacity: .35; cursor: default; }
+.capture-icon-button:disabled:hover { background: transparent; color: var(--capture-muted); }
+.capture-toolbar-surface { background: var(--capture-surface); border: 1px solid var(--capture-border); border-radius: 12px; box-shadow: none; }

@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './capture-overlay.css';
+import { captureIcon } from './capture-icons';
 
 type Point = { x: number; y: number };
 type Rect = Point & { width: number; height: number };
@@ -28,7 +29,11 @@ const textInput = document.createElement('textarea'); textInput.className = 'ann
 let textPoint: Point | null = null;
 root.append(canvas, border, bar, hint, textInput);
 const names: [Kind, string, string][] = [['select', '选区 (V)', '⌖'], ['pen', '画笔 (P)', '✎'], ['arrow', '箭头 (A)', '↗'], ['rectangle', '矩形 (R)', '□'], ['ellipse', '椭圆 (O)', '○'], ['text', '文字 (T)', 'T'], ['mosaic', '马赛克 (M)', '▦'], ['step', '序号 (N)', '①']];
-function button(action: string, label: string, text = label, extra = '') { return `<button type="button" data-do="${action}" title="${label}" aria-label="${label}" ${extra}>${text}</button>`; }
+function button(action: string, label: string, text = label, extra = '') {
+  const attrs = extra.includes('class="') ? extra.replace('class="', 'class="capture-icon-button ') : `class="capture-icon-button" ${extra}`;
+  const icon = action === 'done' && recording ? 'play' : action === 'pause' && text === '继续' ? 'play' : action;
+  return `<button type="button" data-do="${action}" title="${label}" aria-label="${label}" ${names.some(([kind]) => kind === action) ? `aria-pressed="${tool === action}"` : ''} ${attrs}>${captureIcon(icon)}</button>`;
+}
 function renderBar() {
   if (toolbar) return;
   bar.innerHTML = `${button('full', '全屏', '全屏')}${button('last', '上次选区', '上次')}${recording ? '' : names.map(([kind, label, icon]) => button(kind, label, icon, `class="${tool === kind ? 'active' : ''}"`)).join('')}${recording ? '' : '<span class="separator"></span><input id="color" type="color" aria-label="标注颜色" value="' + color + '"><select id="width" aria-label="线条粗细"><option value="2">细</option><option value="4">中</option><option value="8">粗</option></select>' + button('undo', '撤销 Ctrl+Z', '↶', marks.length ? '' : 'disabled') + button('redo', '重做 Ctrl+Shift+Z', '↷', redo.length ? '' : 'disabled') + button('pin', '固定到桌面', '固定', region ? '' : 'disabled') + button('copy', '复制图片 Ctrl+C', '复制')}${button('cancel', '取消 Esc', '取消')}${button('done', recording ? '倒计时后开始录制' : '完成标注并保存 Enter', recording ? '开始录制' : '完成', `class="primary" ${region ? '' : 'disabled'}`)}`;
@@ -205,8 +210,8 @@ let startedAt = 0, paused = false, frozen = '00:00';
 void listen<{active: boolean; paused: boolean; startedAt: number}>('tools-recording', async ({payload}) => {
   if (!recording || !payload.active) return;
   startedAt = payload.startedAt; paused = payload.paused;
-  if (!toolbar) { toolbar = true; image.close(); canvas.remove(); border.remove(); textInput.remove(); hint.remove(); root.className = 'record-toolbar'; bar.className = 'record-controls'; bar.hidden = false; bar.removeAttribute('style'); await invoke('capture_toolbar'); }
-  bar.innerHTML = `<span data-tauri-drag-region class="record-drag" title="拖动控制条">⠿</span><span class="red-dot"></span><time id="record-clock">${frozen}</time>${button('pause', paused ? '继续录制' : '暂停录制', paused ? '继续' : '暂停')}${button('stop', '结束录制并保存', '结束', 'class="primary"')}`;
+  if (!toolbar) { toolbar = true; document.body.classList.add('recording-mode'); image.close(); canvas.remove(); border.remove(); textInput.remove(); hint.remove(); root.className = 'record-toolbar'; bar.className = 'record-controls'; bar.hidden = false; bar.removeAttribute('style'); await invoke('capture_toolbar'); }
+  bar.innerHTML = `<span data-tauri-drag-region class="record-drag" title="拖动控制条">${captureIcon('drag')}</span><span class="red-dot ${paused ? 'paused' : ''}"></span><time id="record-clock" aria-label="录制时长">${frozen}</time><span class="separator"></span>${button('pause', paused ? '继续录制' : '暂停录制', paused ? '继续' : '暂停')}${button('stop', '结束录制并预览', '结束', 'class="primary"')}`;
 });
 setInterval(() => {
   if (!toolbar || paused) return; const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); frozen = `${String(Math.floor(seconds / 60)).padStart(2,'0')}:${String(seconds % 60).padStart(2,'0')}`;
