@@ -4,7 +4,9 @@
 
 ## 下载安装
 
-前往 [GitHub Releases](https://github.com/maoxiaoquan/my-assistant/releases)，在对应版本的 **Assets** 中下载 Windows `.exe` / `.msi`、macOS `.dmg` 或 Linux `.AppImage` / `.deb`。`Source code` 是源码，不是安装包。首次发布完成后才会出现下载文件。
+**[下载最新安装包（GitHub）](https://github.com/maoxiaoquan/my-assistant/releases/latest)**
+
+从 Gitee 浏览本项目时，也可点击上方链接进入 GitHub 下载。在对应版本的 **Assets** 中选择 Windows `.exe` / `.msi`、macOS `.dmg` 或 Linux `.AppImage` / `.deb`。`Source code` 是源码，不是安装包。
 
 也可访问 [Gitee 发行版](https://gitee.com/maoxiaoquan/my-assistant/releases)，同步完成后可下载相同安装包。仓库已配置“版本标签 → 跨平台构建 → GitHub Release → Gitee 同步”的流程；Gitee 同步需配置 `GITEE_TOKEN`。
 
