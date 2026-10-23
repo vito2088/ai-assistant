@@ -2,6 +2,12 @@
 
 一个可驻留桌面的本地小助手，包含文档、工作台、工具和设置。技术栈：Tauri 2、Rust、TypeScript、SQLite，目标平台为 Windows、macOS、Linux。
 
+## 下载安装
+
+前往 [GitHub Releases](https://github.com/maoxiaoquan/my-assistant/releases)，在对应版本的 **Assets** 中下载 Windows `.exe` / `.msi`、macOS `.dmg` 或 Linux `.AppImage` / `.deb`。`Source code` 是源码，不是安装包。首次发布完成后才会出现下载文件。
+
+仓库已配置版本标签触发的自动打包流程，全部平台构建成功后公开 Release。发布步骤、版本管理和签名说明见 [GitHub 发布指南](docs/github-releases.md)。
+
 ## 功能清单
 
 | 栏目 | 功能 | 当前支持 |
