@@ -24,8 +24,8 @@ Gitee 不会执行仓库里的 `.github/workflows`。因此仅推代码或标签
 将 `GITEE_TOKEN` 通过安全方式设置为当前终端环境变量，不写入仓库文件或命令历史。然后运行：
 
 ```powershell
-$env:RELEASE_TAG='v0.1.0'
-$env:RELEASE_ASSETS_DIR='D:\releases\v0.1.0'
+$env:RELEASE_TAG='v0.1.1'
+$env:RELEASE_ASSETS_DIR='D:\releases\v0.1.1'
 $env:RELEASE_NOTES_FILE='docs/release-notes.md'
 node scripts/gitee-release.mjs
 ```

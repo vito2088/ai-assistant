@@ -2,6 +2,8 @@
 
 更新日期：2026-10-23
 
+版本记录：`v0.1.0` 的首次 CI 在 Windows 打包步骤失败，未生成公开发行版；修正安装器配置及双仓库流程后使用 `v0.1.1` 发布，保留旧标签历史。
+
 本项目的开发分支是 `main`，两个远程仓库分别是：
 
 | 远程名 | 用途 | 地址 |
@@ -81,7 +83,8 @@ git push origin-github v0.1.1
 1. `check`：版本一致性、测试、前端构建。
 2. `build`：Windows x64、macOS ARM64、macOS Intel、Linux x64 四个任务。
 3. `publish`：汇总 EXE、MSI、两个 DMG、DEB、AppImage 和 `SHA256SUMS.txt`，公开 GitHub Release。
-4. `sync-gitee`：下载已发布附件，检查校验和与 Gitee 标签，上传 Gitee 并更新说明。
+4. `configure-gitee`：确认 Gitee 的 main 分支存在，将默认分支设为 main 并再次读取验证。
+5. `sync-gitee`：下载已发布附件，检查校验和与 Gitee 标签，上传 Gitee 并更新说明。
 
 下载页：
 
@@ -92,21 +95,21 @@ git push origin-github v0.1.1
 
 ## 四、补同步已有版本到 Gitee
 
-适用于本次 `v0.1.0`：最初的标签流程没有 Gitee 同步步骤，**更新 main 不会改变已运行的标签流程**，因此首次需要补同步。
+适用于 GitHub 已成功发布、但 Gitee 缺少附件的版本。**更新 main 不会改变已运行的标签流程**，旧标签流程缺少同步步骤时可以手动补同步。失败且没有 GitHub Release 的 `v0.1.0` 不适用；以下以 `v0.1.1` 为例。
 
 先确保 GitHub Release 已发布成功、两边源码和标签相同，并配置 `GITEE_TOKEN`：
 
 ```powershell
 git push origin-gitee main
-git push origin-gitee v0.1.0
+git push origin-gitee v0.1.1
 ```
 
-进入 Actions → Release installers → **Run workflow**，分支选择包含最新同步脚本的 `main`，`tag` 填 `v0.1.0`，执行。手动运行只下载已有 GitHub Release 并同步到 Gitee，不重新构建，不重发 GitHub Release。按钮不可见时检查默认分支设置，见“首次准备”。
+进入 Actions → Release installers → **Run workflow**，分支选择包含最新同步脚本的 `main`，`tag` 填 `v0.1.1`，执行。手动运行只下载已有 GitHub Release 并同步到 Gitee，不重新构建，不重发 GitHub Release。按钮不可见时检查默认分支设置，见“首次准备”。
 
 也可在安装了 GitHub CLI 并登录后运行：
 
 ```powershell
-gh workflow run release.yml --repo maoxiaoquan/my-assistant --ref main -f tag=v0.1.0
+gh workflow run release.yml --repo maoxiaoquan/my-assistant --ref main -f tag=v0.1.1
 ```
 
 ## 五、失败处理

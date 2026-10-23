@@ -126,9 +126,15 @@ jobs:
             gh release edit "$RELEASE_TAG" --draft=false --prerelease=false
           fi
 
-  sync-gitee:
+  configure-gitee:
     needs: publish
     if: always() && (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/repository-default-branch.yml
+    secrets: inherit
+
+  sync-gitee:
+    needs: configure-gitee
+    if: always() && needs.configure-gitee.result == 'success'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

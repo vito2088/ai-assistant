@@ -22,19 +22,11 @@
 
 流程使用 GitHub 自带 `GITHUB_TOKEN`，不需要创建个人访问令牌。仓库需允许 GitHub Actions 和流程使用的 actions；发布任务有 `contents: write` 权限。此流程不包含应用内自动升级。
 
-## 首次发布 v0.1.0
+## 发布入口
 
-先提交发布配置，检查 `docs/release-notes.md`，再执行：
+当前两个远程统一使用 `main`，具体提交、推送和标签命令请按 [统一发布指南](releasing.md) 操作：先推 Gitee 的代码与标签，再推 GitHub 的对应标签。
 
-```powershell
-git push origin-github main
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin-github v0.1.0
-```
-
-请仅在标签尚不存在时创建。代码和标签必须包含本发布流程。前往仓库 **Actions → Release installers** 等待构建；完成后 Releases 中会出现可下载的软件。发布到 Gitee 不会触发 GitHub Actions。
-
-以上为仅 GitHub 的初始步骤。当前同时发布 Gitee 时，须先推送 `origin-gitee main`，并在 GitHub 标签推送之前推送相同的 `origin-gitee v0.1.0`。`v0.1.0` 已创建，不要重复创建或移动；首版补同步步骤见统一发布指南。
+`v0.1.0` 已创建，但 Windows 打包失败，没有公开安装包；修复后的版本为 `v0.1.1`。不要重建或移动旧标签。GitHub 发布完成后先验证 Gitee 默认分支，再同步附件；旧版本可用 Run workflow 补同步。
 
 ## 后续版本
 
