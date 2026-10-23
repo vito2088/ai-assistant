@@ -27,14 +27,14 @@
 先提交发布配置，检查 `docs/release-notes.md`，再执行：
 
 ```powershell
-git push origin-github master
+git push origin-github main
 git tag -a v0.1.0 -m "Release v0.1.0"
 git push origin-github v0.1.0
 ```
 
 请仅在标签尚不存在时创建。代码和标签必须包含本发布流程。前往仓库 **Actions → Release installers** 等待构建；完成后 Releases 中会出现可下载的软件。发布到 Gitee 不会触发 GitHub Actions。
 
-以上为仅 GitHub 的初始步骤。当前同时发布 Gitee 时，须先推送 `origin-gitee master`，并在 GitHub 标签推送之前推送相同的 `origin-gitee v0.1.0`。`v0.1.0` 已创建，不要重复创建或移动；首版补同步步骤见统一发布指南。
+以上为仅 GitHub 的初始步骤。当前同时发布 Gitee 时，须先推送 `origin-gitee main`，并在 GitHub 标签推送之前推送相同的 `origin-gitee v0.1.0`。`v0.1.0` 已创建，不要重复创建或移动；首版补同步步骤见统一发布指南。
 
 ## 后续版本
 

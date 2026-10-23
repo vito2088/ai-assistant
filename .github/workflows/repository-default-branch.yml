@@ -1,0 +1,39 @@
+name: Configure Gitee default branch
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/repository-default-branch.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Set Gitee default branch to main
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        shell: python
+        run: |
+          import json, os, urllib.request, urllib.error
+          token = os.environ.get('GITEE_TOKEN')
+          if not token:
+              raise SystemExit('Missing GITEE_TOKEN repository secret')
+          base = 'https://gitee.com/api/v5/repos/maoxiaoquan/my-assistant'
+          def api(path='', payload=None):
+              headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}
+              request = urllib.request.Request(base + path, headers=headers, method='PATCH' if payload else 'GET', data=json.dumps(payload).encode() if payload else None)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit('Gitee API returned HTTP ' + str(error.code))
+          api('/branches/main')
+          repo = api()
+          if repo['default_branch'] != 'main':
+              api(payload={'name': repo['name'], 'default_branch': 'main'})
+          assert api()['default_branch'] == 'main', 'Default branch verification failed'
+          print('Gitee default branch is main. Existing branches have been preserved.')

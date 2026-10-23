@@ -1,10 +1,32 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { validateTag, loadAssets, publishGitee } from './gitee-release.mjs';
+
+test('collect all platform installers with stable ASCII names and matching checksums', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'assistant-collect-test-'));
+  try {
+    await writeFile(join(directory, 'package.json'), JSON.stringify({ version: '0.1.1' }));
+    for (const [target, extensions] of [
+      ['x86_64-pc-windows-msvc', ['exe', 'msi']], ['aarch64-apple-darwin', ['dmg']],
+      ['x86_64-apple-darwin', ['dmg']], ['x86_64-unknown-linux-gnu', ['deb', 'AppImage']],
+    ]) {
+      const folder = join(directory, 'installers', `installers-${target}`, 'bundle');
+      await mkdir(folder, { recursive: true });
+      for (const extension of extensions) await writeFile(join(folder, `桌面小助手.${extension}`), `${target}-${extension}`);
+    }
+    execFileSync(process.execPath, [fileURLToPath(new URL('./collect-release-assets.mjs', import.meta.url))], { cwd: directory });
+    const assets = await loadAssets(join(directory, 'release-assets'));
+    assert.equal(assets.length, 7);
+    assert.equal(assets.every(asset => /^[\x20-\x7e]+$/.test(asset.name)), true);
+    assert.equal(assets.filter(asset => asset.name.endsWith('.dmg')).length, 2);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('reject unsafe tags and corrupted or incomplete installer manifests', async () => {
   for (const value of ['', '../v1', 'v1;echo', '1.0.0']) assert.throws(() => validateTag(value));

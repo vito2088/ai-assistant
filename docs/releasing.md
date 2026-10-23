@@ -2,7 +2,7 @@
 
 更新日期：2026-10-23
 
-本项目的开发分支是 `master`，两个远程仓库分别是：
+本项目的开发分支是 `main`，两个远程仓库分别是：
 
 | 远程名 | 用途 | 地址 |
 | --- | --- | --- |
@@ -20,8 +20,8 @@ npm run build
 git add README.md src docs
 git diff --cached --stat
 git commit -m "feat: 描述本次功能"
-git push origin-gitee master
-git push origin-github master
+git push origin-gitee main
+git push origin-github main
 ```
 
 `git add` 中的路径按本次修改填写。例如改了 Rust 或发布流程，需要额外加入 `src-tauri`、`.github`、`scripts`、`package.json` 等对应文件。不要加入 `node_modules`、`dist`、`target`、个人数据或令牌。只有一个远程推送成功时，另一个可单独重试；不需要再次提交。
@@ -34,7 +34,7 @@ git push origin-github master
 2. GitHub 开启 Actions，允许项目流程使用的 actions。跨平台构建使用 GitHub 托管运行器，无需本机同时安装三种系统。
 3. 在 Gitee [私人令牌设置](https://gitee.com/profile/personal_access_tokens) 创建具有 **projects** 权限的令牌，账号需有目标仓库发布权限。
 4. 到 [GitHub Actions secrets](https://github.com/maoxiaoquan/my-assistant/settings/secrets/actions) → **New repository secret**，名称填写 `GITEE_TOKEN`，值填写令牌。不要放到 Variables、源码、文档或聊天里。令牌过期后更新同名 secret。
-5. 当前实际代码位于 `master`。若 GitHub 默认分支仍为 `main`，在仓库 **Settings → General → Default branch** 改为 `master`，或将完整代码合并到默认分支；否则首页可能显示旧代码，手动 **Run workflow** 按钮也可能不出现。本项目文档以下以 `master` 为准。
+5. 两个远程仓库统一使用 `main` 为开发和默认分支。若旧克隆仍停在 `master`，先保存未提交修改，再执行 `git fetch origin-github` 和 `git switch --track origin-github/main`（已有本地 main 时执行 `git switch main`）。GitHub 默认分支为 main；Gitee 的默认分支可通过 Actions → Configure Gitee default branch 校正，流程使用 GITEE_TOKEN，执行后再次读取验证。
 
 GitHub 发布使用内置 `GITHUB_TOKEN`；Gitee 使用 `GITEE_TOKEN`。两者不能互换。现有 Git 登录密码能推送代码，并不代表它能调用 Gitee 发行版 API。
 
@@ -65,8 +65,8 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```powershell
 git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json docs/release-notes.md
 git commit -m "chore: release v0.1.1"
-git push origin-gitee master
-git push origin-github master
+git push origin-gitee main
+git push origin-github main
 git tag -a v0.1.1 -m "Release v0.1.1"
 git push origin-gitee v0.1.1
 git push origin-github v0.1.1
@@ -92,21 +92,21 @@ git push origin-github v0.1.1
 
 ## 四、补同步已有版本到 Gitee
 
-适用于本次 `v0.1.0`：最初的标签流程没有 Gitee 同步步骤，**更新 master 不会改变已运行的标签流程**，因此首次需要补同步。
+适用于本次 `v0.1.0`：最初的标签流程没有 Gitee 同步步骤，**更新 main 不会改变已运行的标签流程**，因此首次需要补同步。
 
 先确保 GitHub Release 已发布成功、两边源码和标签相同，并配置 `GITEE_TOKEN`：
 
 ```powershell
-git push origin-gitee master
+git push origin-gitee main
 git push origin-gitee v0.1.0
 ```
 
-进入 Actions → Release installers → **Run workflow**，分支选择包含最新同步脚本的 `master`，`tag` 填 `v0.1.0`，执行。手动运行只下载已有 GitHub Release 并同步到 Gitee，不重新构建，不重发 GitHub Release。按钮不可见时检查默认分支设置，见“首次准备”。
+进入 Actions → Release installers → **Run workflow**，分支选择包含最新同步脚本的 `main`，`tag` 填 `v0.1.0`，执行。手动运行只下载已有 GitHub Release 并同步到 Gitee，不重新构建，不重发 GitHub Release。按钮不可见时检查默认分支设置，见“首次准备”。
 
 也可在安装了 GitHub CLI 并登录后运行：
 
 ```powershell
-gh workflow run release.yml --repo maoxiaoquan/my-assistant --ref master -f tag=v0.1.0
+gh workflow run release.yml --repo maoxiaoquan/my-assistant --ref main -f tag=v0.1.0
 ```
 
 ## 五、失败处理
