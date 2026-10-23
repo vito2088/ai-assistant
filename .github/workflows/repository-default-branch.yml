@@ -21,7 +21,8 @@ jobs:
           import json, os, urllib.request, urllib.error
           token = os.environ.get('GITEE_TOKEN')
           if not token:
-              raise SystemExit('Missing GITEE_TOKEN repository secret')
+              print('::error::Missing GITEE_TOKEN repository secret')
+              raise SystemExit(1)
           base = 'https://gitee.com/api/v5/repos/maoxiaoquan/my-assistant'
           def api(path='', payload=None):
               headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}
@@ -30,7 +31,11 @@ jobs:
                   with urllib.request.urlopen(request, timeout=30) as response:
                       return json.load(response)
               except urllib.error.HTTPError as error:
-                  raise SystemExit('Gitee API returned HTTP ' + str(error.code))
+                  print('::error::Gitee API ' + (path or '/repository') + ' returned HTTP ' + str(error.code))
+                  raise SystemExit(1)
+              except urllib.error.URLError:
+                  print('::error::Gitee API network connection failed')
+                  raise SystemExit(1)
           api('/branches/main')
           repo = api()
           if repo['default_branch'] != 'main':
