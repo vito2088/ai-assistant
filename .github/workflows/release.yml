@@ -1,6 +1,12 @@
 name: Release installers
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已发布的 GitHub 版本标签，仅补同步到 Gitee，例如 v0.1.0'
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
@@ -14,6 +20,7 @@ concurrency:
 
 jobs:
   check:
+    if: github.event_name == 'push'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -120,3 +127,36 @@ jobs:
           else
             gh release edit "$RELEASE_TAG" --draft=false --prerelease=false
           fi
+
+  sync-gitee:
+    needs: publish
+    if: always() && (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check synchronization configuration
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          node --input-type=module -e "import {validateTag} from './scripts/gitee-release.mjs'; validateTag(process.env.RELEASE_TAG); if (!process.env.GITEE_TOKEN) throw new Error('请先配置 GITEE_TOKEN repository secret');"
+      - name: Download published GitHub installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          gh release download "$RELEASE_TAG" --dir release-assets
+          gh release view "$RELEASE_TAG" --json body --jq .body > release-body.md
+      - name: Publish installers to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_NOTES_FILE: release-body.md
+        run: node scripts/gitee-release.mjs

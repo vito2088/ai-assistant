@@ -6,7 +6,9 @@
 
 前往 [GitHub Releases](https://github.com/maoxiaoquan/my-assistant/releases)，在对应版本的 **Assets** 中下载 Windows `.exe` / `.msi`、macOS `.dmg` 或 Linux `.AppImage` / `.deb`。`Source code` 是源码，不是安装包。首次发布完成后才会出现下载文件。
 
-仓库已配置版本标签触发的自动打包流程，全部平台构建成功后公开 Release。发布步骤、版本管理和签名说明见 [GitHub 发布指南](docs/github-releases.md)。
+也可访问 [Gitee 发行版](https://gitee.com/maoxiaoquan/my-assistant/releases)，同步完成后可下载相同安装包。仓库已配置“版本标签 → 跨平台构建 → GitHub Release → Gitee 同步”的流程；Gitee 同步需配置 `GITEE_TOKEN`。
+
+如何提交和推送代码、更新版本、发布两个平台及处理失败，见 [代码推送与安装包发布](docs/releasing.md)。平台细节见 [GitHub 发布配置](docs/github-releases.md) 和 [Gitee 同步配置](docs/gitee-releases.md)。
 
 ## 功能清单
 
