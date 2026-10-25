@@ -1,3 +1,4 @@
+import { t, setLocale } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { join } from '@tauri-apps/api/path';
@@ -15,7 +16,7 @@ pinButton.innerHTML = captureIcon('pin');
 saveButton.innerHTML = captureIcon('save');
 document.querySelector('#close')!.innerHTML = captureIcon('cancel');
 document.querySelectorAll('nav button').forEach(button => button.classList.add('capture-icon-button'));
-function updatePinLabel() { const label = pinned ? '取消置顶' : '固定置顶'; pinButton.title = label; pinButton.setAttribute('aria-label', label); }
+function updatePinLabel() { const label = pinned ? t("取消置顶") : t("固定置顶"); pinButton.title = label; pinButton.setAttribute('aria-label', label); }
 updatePinLabel();
 function report(error: unknown) { status.hidden = false; status.textContent = String(error); }
 async function close() { if (!busy) await invoke('close_pinned_capture'); }
@@ -37,8 +38,8 @@ saveButton.addEventListener('click', () => {
     try {
       const saved = await invoke<string | null>('get_setting', { key: 'capture_preferences' });
       const directory = saved ? JSON.parse(saved).screenshotDirectory : '';
-      const name = `截图-${new Date().toLocaleString('sv-SE').replace(/[: ]/g, '-')}.png`;
-      let path = await save({ title: '保存贴图', defaultPath: directory ? await join(directory, name) : name, filters: [{ name: 'PNG', extensions: ['png'] }] });
+      const name = t("截图-{0}.png", [new Date().toLocaleString('sv-SE').replace(/[: ]/g, '-')]);
+      let path = await save({ title: t("保存贴图"), defaultPath: directory ? await join(directory, name) : name, filters: [{ name: 'PNG', extensions: ['png'] }] });
       if (!path) return;
       if (!/\.[^\\/.]+$/.test(path)) path += '.png';
       const id = await invoke<string>('begin_tool_export', { path });
@@ -46,11 +47,13 @@ saveButton.addEventListener('click', () => {
         for (let i = 0; i < blob!.size; i += 1024 * 1024) await invoke('append_tool_export', new Uint8Array(await blob!.slice(i, i + 1024 * 1024).arrayBuffer()), { headers: { 'x-export-id': id } });
         await invoke('finish_tool_export', { id, discard: false });
       } catch (error) { await invoke('finish_tool_export', { id, discard: true }).catch(() => {}); throw error; }
-      status.hidden = false; status.textContent = '已保存'; setTimeout(() => { status.hidden = true; }, 2500);
+      status.hidden = false; status.textContent = t("已保存"); setTimeout(() => { status.hidden = true; }, 2500);
     } finally { busy = false; saveButton.disabled = false; }
   })().catch(report);
 });
 async function initialize() {
+  setLocale(await invoke<string | null>('get_setting', { key: 'ui_language' }));
+  localizeLabels();
   const path = new URLSearchParams(location.search).get('path');
   const bytes = await invoke<ArrayBuffer>('read_capture_draft', { path });
   blob = new Blob([bytes], { type: 'image/png' }); url = URL.createObjectURL(blob); picture.src = url;
@@ -58,3 +61,18 @@ async function initialize() {
 }
 window.addEventListener('beforeunload', () => { if (url) URL.revokeObjectURL(url); });
 void initialize().catch(report);
+
+function localizeLabels() {
+  document.title = t('截图贴图');
+  picture.alt = t('固定到桌面的截图');
+  document.querySelector('nav')!.setAttribute('aria-label', t('贴图操作'));
+  for (const [selector, key] of [['#save', '另存截图'], ['#close', '关闭贴图 Esc']]) {
+    const button = document.querySelector<HTMLButtonElement>(selector)!;
+    button.title = t(key); button.setAttribute('aria-label', t(key));
+  }
+  if (!blob) status.textContent = t('正在加载截图…');
+  updatePinLabel();
+}
+window.addEventListener('storage', event => {
+  if (event.key === 'ui_language') { setLocale(event.newValue); localizeLabels(); }
+});

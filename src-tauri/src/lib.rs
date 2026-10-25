@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
@@ -11,14 +12,31 @@ use uuid::Uuid;
 mod tools;
 mod capture_workspace;
 mod window_recovery;
+mod ai;
+mod settings_file;
+static TRAY_RECORDING: AtomicBool = AtomicBool::new(false);
+fn tray_labels(locale: &str) -> [&'static str; 4] {
+    match locale {
+        "en" => ["Show Assistant", "Quit", "Stop recording and preview", "Desktop Assistant"],
+        "es" => ["Mostrar asistente", "Salir", "Detener y previsualizar", "Asistente de escritorio"],
+        _ => ["显示小助手", "退出", "结束录屏并预览", "桌面小助手"],
+    }
+}
 
 #[tauri::command]
 fn set_tray_recording(app: AppHandle, active: bool) -> Result<(), String> {
-    let show = MenuItem::with_id(&app, "show", "显示小助手", true, None::<&str>).map_err(|e| e.to_string())?;
-    let quit = MenuItem::with_id(&app, "quit", "退出", true, None::<&str>).map_err(|e| e.to_string())?;
-    let stop = MenuItem::with_id(&app, "stop-recording", "结束录屏并预览", true, None::<&str>).map_err(|e| e.to_string())?;
+    TRAY_RECORDING.store(active, Ordering::Relaxed);
+    let locale = get_setting(app.clone(), "ui_language".into())?.unwrap_or_default();
+    let labels = tray_labels(&locale);
+    if let Some(window) = app.get_webview_window("main") { let _ = window.set_title(labels[3]); }
+    let show = MenuItem::with_id(&app, "show", labels[0], true, None::<&str>).map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(&app, "quit", labels[1], true, None::<&str>).map_err(|e| e.to_string())?;
+    let stop = MenuItem::with_id(&app, "stop-recording", labels[2], true, None::<&str>).map_err(|e| e.to_string())?;
     let menu = if active { Menu::with_items(&app, &[&show, &stop, &quit]) } else { Menu::with_items(&app, &[&show, &quit]) }.map_err(|e| e.to_string())?;
-    if let Some(tray) = app.tray_by_id("assistant") { tray.set_menu(Some(menu)).map_err(|e| e.to_string())?; }
+    if let Some(tray) = app.tray_by_id("assistant") {
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+        tray.set_tooltip(Some(labels[3])).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -508,24 +526,31 @@ fn launch_entry(app: AppHandle, id: i64) -> Result<(), String> {
 
 #[tauri::command]
 fn get_setting(app: AppHandle, key: String) -> Result<Option<String>, String> {
-    db(&app)?
-        .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0))
-        .optional()
-        .map_err(|e| e.to_string())
+    settings_file::read(&db(&app)?, &key)
 }
 
 #[tauri::command]
 fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String> {
-    if !["feature_visibility", "capture_preferences", "mode", "page", "document_section", "workbench_section", "selected_computer_id", "pinned", "window_x", "window_y"].contains(&key.as_str()) {
-        return Err("不支持的设置".into());
-    }
-    db(&app)?
-        .execute(
-            "INSERT INTO settings(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            params![key, value],
-        )
-        .map_err(|e| e.to_string())?;
+    validate_public_setting(&key, &value)?;
+    store_setting(&db(&app)?, &key, &value)?;
+    if key == "ui_language" { let _ = set_tray_recording(app, TRAY_RECORDING.load(Ordering::Relaxed)); }
     Ok(())
+}
+
+fn validate_public_setting(key: &str, value: &str) -> Result<(), String> {
+    if !["ui_language", "feature_visibility", "capture_preferences", "capture_shortcuts", "autostart", "mode", "page", "document_section", "workbench_section", "selected_computer_id", "pinned", "window_x", "window_y"].contains(&key) {
+        return Err(format!("设置项「{key}」不支持通过通用设置接口保存"));
+    }
+    if key == "ui_language" && !["zh-CN", "en", "es"].contains(&value) {
+        return Err("Unsupported interface language".into());
+    }
+    Ok(())
+}
+
+// Internal writers call this only after their domain-specific validation.
+// It is not an IPC command; protected settings stay inaccessible to set_setting.
+fn store_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    settings_file::store(conn, key, value)
 }
 
 #[tauri::command]
@@ -540,6 +565,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(tools::ToolState::default())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -569,6 +595,7 @@ pub fn run() {
                 _ => {}
             })
             .build(app)?;
+            set_tray_recording(app.handle().clone(), false).map_err(std::io::Error::other)?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -580,6 +607,24 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            settings_file::read_settings_file,
+            settings_file::validate_settings_json,
+            settings_file::save_settings_json,
+            settings_file::reveal_settings_file,
+            settings_file::open_settings_external,
+            ai::ai_settings,
+            ai::ai_list_models,
+            ai::ai_save_settings,
+            ai::ai_select_model,
+            ai::ai_delete_model,
+            ai::ai_generate,
+            ai::ai_cancel,
+            ai::ai_sessions,
+            ai::ai_save_session,
+            ai::ai_delete_session,
+            ai::ai_image,
+            ai::ai_replace_note,
+            ai::ai_add_todos,
             list_todos,
             add_todo,
             set_todo_completed,
@@ -631,6 +676,20 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_shortcuts_can_be_saved_and_read_back() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_schema(&mut conn).unwrap();
+        for value in [r#"{"screenshot":"Ctrl+Shift+KeyS","recording":"Ctrl+Alt+KeyR"}"#,
+                      r#"{"screenshot":"","recording":""}"#] {
+            validate_public_setting("capture_shortcuts", value).unwrap();
+            store_setting(&conn, "capture_shortcuts", value).unwrap();
+            let saved: String = conn.query_row("SELECT value FROM settings WHERE key='capture_shortcuts'", [], |r| r.get(0)).unwrap();
+            assert_eq!(saved, value);
+        }
+        assert!(validate_public_setting("ai_config_v2", "{}").is_err());
+    }
 
     #[test]
     fn migrates_legacy_launchers_into_current_computer_once() {

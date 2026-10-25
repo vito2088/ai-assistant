@@ -81,12 +81,16 @@ pub async fn open_capture_overlay(app: AppHandle, display_id: usize, path: Strin
     let monitor = monitors.iter().find(|m| m.name().is_some_and(|n| n == &name)).or_else(|| monitors.first()).ok_or("没有可用的显示器")?;
     let mut url = tauri::Url::parse("http://localhost/capture.html").map_err(|e| e.to_string())?;
     url.query_pairs_mut().append_pair("path", &path).append_pair("mode", &mode).append_pair("countdown", &countdown.min(10).to_string());
+    let scale = monitor.scale_factor();
+    // Set capture exclusion at creation. Hiding and showing a protected WebView on
+    // Windows 10 can leave an opaque black rectangle in Windows Graphics Capture.
     let overlay = WebviewWindowBuilder::new(&app, "capture", WebviewUrl::App(format!("capture.html?{}", url.query().unwrap_or("")).into()))
-        .title("小助手 · 屏幕捕获").decorations(false).resizable(false).shadow(false).skip_taskbar(true).always_on_top(true).visible(false).build().map_err(|e| e.to_string())?;
+        .title("小助手 · 屏幕捕获").decorations(false).resizable(false).shadow(false).skip_taskbar(true).always_on_top(true)
+        .position(monitor.position().x as f64 / scale, monitor.position().y as f64 / scale)
+        .inner_size(monitor.size().width as f64 / scale, monitor.size().height as f64 / scale)
+        .content_protected(true).visible(true).build().map_err(|e| e.to_string())?;
     overlay.set_position(*monitor.position()).map_err(|e| e.to_string())?;
     overlay.set_size(*monitor.size()).map_err(|e| e.to_string())?;
-    overlay.set_content_protected(true).map_err(|e| e.to_string())?;
-    overlay.show().map_err(|e| e.to_string())?;
     overlay.set_focus().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -101,23 +105,25 @@ pub async fn show_recording_border(app: AppHandle, region: super::tools::Capture
     let overlay = app.get_webview_window("capture").ok_or("选区窗口已关闭")?;
     let monitor = overlay.current_monitor().map_err(|e| e.to_string())?.ok_or("显示器不可用")?;
     let region = region.checked(monitor.size().width, monitor.size().height)?;
+    let scale = monitor.scale_factor();
     let border = WebviewWindowBuilder::new(&app, "capture-border", WebviewUrl::App("capture-border.html".into()))
-        .title("录制区域").transparent(true).decorations(false).shadow(false).resizable(false).skip_taskbar(true).always_on_top(true).focused(false).visible(false).build().map_err(|e| e.to_string())?;
+        .title("录制区域").transparent(true).decorations(false).shadow(false).resizable(false).skip_taskbar(true).always_on_top(true).focused(false)
+        .position((monitor.position().x + region.x as i32) as f64 / scale, (monitor.position().y + region.y as i32) as f64 / scale)
+        .inner_size(region.width as f64 / scale, region.height as f64 / scale)
+        .content_protected(true).visible(true).build().map_err(|e| e.to_string())?;
     border.set_position(tauri::PhysicalPosition::new(monitor.position().x + region.x as i32, monitor.position().y + region.y as i32)).map_err(|e| e.to_string())?;
     border.set_size(tauri::PhysicalSize::new(region.width, region.height)).map_err(|e| e.to_string())?;
-    border.set_content_protected(true).map_err(|e| e.to_string())?;
     border.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
-    border.show().map_err(|e| e.to_string())?;
     Ok(())
 }
 #[tauri::command]
 pub fn capture_toolbar(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("capture") {
         let m = w.current_monitor().map_err(|e| e.to_string())?.ok_or("显示器不可用")?;
-        w.hide().map_err(|e| e.to_string())?;
+        // Keep this HWND visible throughout the transition; hide/show breaks
+        // WDA_EXCLUDEFROMCAPTURE on affected Windows 10/WebView2 combinations.
         w.set_size(tauri::LogicalSize::new(340.0, 64.0)).map_err(|e| e.to_string())?;
         w.set_position(tauri::PhysicalPosition::new(m.position().x + 20, m.position().y + 20)).map_err(|e| e.to_string())?;
-        w.show().map_err(|e| e.to_string())?;
     }
     Ok(())
 }

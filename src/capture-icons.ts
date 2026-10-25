@@ -1,4 +1,6 @@
 const paths: Record<string, string> = {
+  ocr: '<path d="M7 3H3v4m14-4h4v4M3 17v4h4m14-4v4h-4M7 8h10M12 8v9m-3 0h6"/>',
+  translate: '<path d="M3 5h11M8 3v2m-3 0c0 5 4 8 8 9m-1-9c0 5-4 8-9 10m10 6 4-11 4 11m-6-4h4"/>',
   full: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><rect x="7" y="7" width="10" height="10" rx="1"/>',
   last: '<path d="M3 10a9 9 0 1 1 2 8M3 4v6h6m3-3v5l3 2"/>',
   select: '<path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4"/><path d="m9 9 8 3-4 1-1 4Z"/>',

@@ -1,0 +1,24 @@
+export type ModelPreset = { id: string; vision?: boolean };
+export type ProviderPreset = { id: string; name: string; group: string; baseUrl: string; models: ModelPreset[]; hint: string; docs: string };
+// Official Chat Completions endpoints, reviewed 2026-10-24. Suggestions remain editable.
+export const providerPresets: ProviderPreset[] = [
+  { id: 'custom', name: '自定义服务', group: '自定义', baseUrl: '', models: [], hint: '填写支持流式 Chat Completions 的服务地址与模型 ID。', docs: '' },
+  { id: 'deepseek', name: 'DeepSeek', group: '国内', baseUrl: 'https://api.deepseek.com', models: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }], hint: '使用 DeepSeek 开放平台的 API 密钥。', docs: 'https://api-docs.deepseek.com/' },
+  { id: 'qwen', name: '通义千问 · 阿里云百炼', group: '国内', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: [{ id: 'qwen-plus' }], hint: '默认北京地域；其他地域或工作空间请替换为控制台提供的兼容地址。', docs: 'https://help.aliyun.com/zh/model-studio/model-calling-in-sub-workspace' },
+  { id: 'kimi', name: 'Kimi · 月之暗面', group: '国内', baseUrl: 'https://api.moonshot.cn/v1', models: [{ id: 'kimi-k3.1-pro', vision: true }, { id: 'kimi-k3.1-pro-highspeed', vision: true }], hint: '使用 Kimi 开放平台 API 密钥。', docs: 'https://platform.kimi.com/docs/get-api-key' },
+  { id: 'glm', name: '智谱 GLM', group: '国内', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: [{ id: 'glm-5.3' }], hint: '此处为标准 API；Coding Plan 的密钥和专属地址不同。', docs: 'https://docs.bigmodel.cn/cn/guide/start/quick-start' },
+  { id: 'doubao', name: '豆包 · 火山方舟', group: '国内', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: [], hint: '填写已开通的模型 ID 或推理接入点 ep-…；此处为标准 API 地址。', docs: 'https://console.volcengine.com/ark/region%3Acn-beijing/docs/integrate-third-party-tools' },
+  { id: 'minimax', name: 'MiniMax', group: '国内', baseUrl: 'https://api.minimax.cn/v1', models: [{ id: 'MiniMax-M3.1-Flash' }, { id: 'MiniMax-M3' }], hint: '使用开放平台 API 密钥；订阅套餐请按对应文档修改地址。', docs: 'https://platform.minimax.cn/docs/api-reference/text-openai-api' },
+  { id: 'siliconflow', name: '硅基流动', group: '国内', baseUrl: 'https://api.siliconflow.cn/v1', models: [{ id: 'deepseek-ai/DeepSeek-V4-Flash' }, { id: 'moonshotai/Kimi-K2.7-Code', vision: true }], hint: '模型 ID 包含组织前缀，请以账号可用模型列表为准。', docs: 'https://docs.siliconflow.cn/docs/api/chat-completions-post' },
+  { id: 'tencent', name: '腾讯混元 · TokenHub', group: '国内', baseUrl: 'https://tokenhub.tencentmaas.com/v1', models: [], hint: '默认广州地域，填写 TokenHub 控制台已开通的模型 ID。', docs: 'https://cloud.tencent.com/document/product/1823/130078' },
+  { id: 'baidu', name: '百度文心 · 千帆', group: '国内', baseUrl: 'https://qianfan.baidubce.com/v2', models: [], hint: '填写千帆模型列表中的 model 值；使用 API Key 鉴权。', docs: 'https://cloud.baidu.com/doc/qianfan-api/s/Dmba8k71y' },
+  { id: 'openai', name: 'OpenAI', group: '国外', baseUrl: 'https://api.openai.com/v1', models: [{ id: 'gpt-6.1-sol', vision: true }], hint: '使用 OpenAI API 密钥；ChatGPT 订阅不等同于 API 额度。', docs: 'https://developers.openai.com/api/docs/models/gpt-6.1-sol' },
+  { id: 'claude', name: 'Anthropic Claude', group: '国外', baseUrl: 'https://api.anthropic.com/v1', models: [{ id: 'claude-opus-5-5', vision: true }, { id: 'claude-sonnet-4-6', vision: true }], hint: '使用官方 OpenAI 兼容接口和工作空间级 API 密钥。', docs: 'https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk' },
+  { id: 'gemini', name: 'Google Gemini', group: '国外', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', models: [{ id: 'gemini-3.8-flash', vision: true }], hint: '使用 Google AI Studio 的 Gemini API 密钥。', docs: 'https://ai.google.dev/gemini-api/docs/openai' },
+  { id: 'grok', name: 'xAI Grok', group: '国外', baseUrl: 'https://api.x.ai/v1', models: [{ id: 'grok-4.7', vision: true }], hint: '使用旧版 Chat Completions 兼容接口；不包含 Responses 专属能力。', docs: 'https://docs.x.ai/developers/model-capabilities/text/best-practices' },
+  { id: 'mistral', name: 'Mistral', group: '国外', baseUrl: 'https://api.mistral.ai/v1', models: [{ id: 'mistral-small-latest' }, { id: 'mistral-large-latest' }], hint: '使用 Mistral Studio 的 API 密钥。', docs: 'https://docs.mistral.ai/resources/migration-guides' },
+  { id: 'groq', name: 'Groq', group: '国外', baseUrl: 'https://api.groq.com/openai/v1', models: [], hint: '填写 Groq 控制台当前可用的模型 ID。', docs: 'https://console.groq.com/docs/openai' },
+  { id: 'openrouter', name: 'OpenRouter', group: '国外', baseUrl: 'https://openrouter.ai/api/v1', models: [{ id: '~openai/gpt-sol-latest' }], hint: '填写平台完整模型 ID；图片能力按实际模型开启。', docs: 'https://openrouter.ai/docs/quickstart' },
+  { id: 'ollama', name: 'Ollama', group: '本机', baseUrl: 'http://localhost:11434/v1', models: [], hint: '先启动 Ollama，填写已下载的模型名称。本机服务通常无需密钥。', docs: 'https://docs.ollama.com/api/openai-compatibility' },
+  { id: 'lmstudio', name: 'LM Studio', group: '本机', baseUrl: 'http://localhost:1234/v1', models: [], hint: '先在 LM Studio 启动服务，填写已加载的模型 ID。', docs: 'https://lmstudio.ai/docs/developer/openai-compat' },
+];

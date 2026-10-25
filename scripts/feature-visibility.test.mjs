@@ -22,7 +22,7 @@ test('parent selection, partial selection, and child restoration stay consistent
   for (const group of featureGroups) {
     const original = parseVisibility(null);
     const partial = setFeatureVisible(original, group.children[0].id, false);
-    assert.deepEqual(groupState(partial, group.id), { checked: false, partial: true, visible: true });
+    assert.deepEqual(groupState(partial, group.id), { checked: false, partial: group.children.length > 1, visible: group.children.length > 1 });
     assert.equal(original[group.children[0].id], true);
     const hidden = setFeatureVisible(partial, group.id, false);
     assert.equal(visiblePages(hidden).includes(group.id), false);

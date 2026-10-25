@@ -1,5 +1,6 @@
 node_modules/
 dist/
+public/ocr/
 src-tauri/target/
 src-tauri/gen/
 .tmp-edge-profile/
