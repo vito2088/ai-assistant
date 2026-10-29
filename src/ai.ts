@@ -84,6 +84,10 @@ export class Ai {
     const profile = this.catalog.profiles.find(p => p.id === this.catalog.activeId);
     return !!profile?.baseUrl.trim() && !!profile.model.trim();
   }
+  private chatAvailable() {
+    return this.hasActiveModel() && (this.savedConfig.hasKey || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(this.savedConfig.baseUrl));
+  }
+  openConfiguration() { this.configAvailable(); this.openEditor(this.catalog.profiles.find(p=>p.id===this.catalog.activeId) ?? this.blankConfig()); }
   private configAvailable() {
     if (this.configBusy || this.requests.size) throw new Error(t("请等待生成或配置操作结束后再修改模型"));
   }
@@ -132,11 +136,13 @@ export class Ai {
   view() {
     if (!this.ready) return `<section class="ai-page"><p>${h("正在读取 AI 数据…")}</p></section>`;
     const s = this.session();
-    return `<section class="ai-page"><div class="ai-toolbar"><strong>${esc(s?.title === '新对话' && !s.messages.length ? t('新对话') : s?.title ?? t("AI 助手"))}</strong>${this.button('new', t('新对话'))}${this.button('history', t("历史"))}</div>
+    const content = `<section class="ai-page"><div class="ai-toolbar"><strong>${esc(s?.title === '新对话' && !s.messages.length ? t('新对话') : s?.title ?? t("AI 助手"))}</strong>${this.button('new', t('新对话'))}${this.button('history', t("历史"))}</div>
       ${this.history ? `<div class="ai-history">${this.sessions.length ? this.sessions.map(item => `<div>${this.button('select', esc(item.title === '新对话' && !item.messages.length ? t('新对话') : item.title), item)}${this.button('delete', t("删除"), item, '', this.requests.has(item.id))}</div>`).join('') : `<p>${h("还没有会话")}</p>`}</div>` : ''}
       <div class="ai-messages scroll-area" data-scroll-key="ai-chat-${s?.id ?? 'empty'}">${s?.messages.length ? s.messages.map(m => `<article class="ai-message ${m.role}"><strong>${m.role === 'user' ? t("你") : esc(m.modelLabel ?? 'AI')}</strong>${(m.attachments ?? []).map(a => this.attachmentView(a)).join('')}<div class="ai-text" data-ai-message="${m.id}">${esc(m.text || (m.status === 'generating' ? t("正在思考…") : ''))}</div>${m.error ? `<p class="tool-error">${esc(m.error)}</p>` : ''}${m.role === 'assistant' && m.text && m.status === 'done' ? `<div class="ai-actions">${this.button('copy', t("复制"), s, `data-message="${m.id}"`)}${this.button('save-note', t("另存速记"), s, `data-message="${m.id}"`)}${this.button('extract', t("提取待办"), s, `data-message="${m.id}"`, this.requests.has(s.id))}</div>` : ''}</article>`).join('') : `<div class="ai-empty"><strong>${h("今天需要什么帮助？")}</strong><p>${h("整理速记、解释截图，或者直接聊聊。")}</p><p>${h("在下方引用速记或添加图片，只有选中的内容会随会话发送。")}</p></div>`}${s ? this.taskView(s) : ''}${s && this.latest(s)?.status === 'error' ? this.button('retry', t("重试上次请求"), s, '', this.requests.has(s.id)) : ''}</div>
       ${this.pickingNotes ? `<div class="ai-note-picker"><strong>${h("选择要引用的速记")}</strong>${this.notes().length ? this.notes().map(n => this.button('attach-note', esc(n.content.slice(0, 65)), undefined, `data-note="${n.id}"`)).join('') : `<p>${h("还没有速记")}</p>`}</div>` : ''}
       <form id="ai-chat-form" class="ai-composer"><div class="ai-attachments">${(s?.attachments ?? []).map(a => this.attachmentView(a, true)).join('')}</div><textarea id="ai-input" maxlength="16000" placeholder="${h("输入问题…")}" aria-label="${h("AI 消息")}">${esc(s?.draft ?? '')}</textarea><div class="ai-actions">${this.button('pick-note', t("引用速记"))}${this.button('attach-image', t("添加图片"), undefined, '', !this.savedConfig.vision)}<span></span>${s && this.requests.has(s.id) ? this.button('stop', t("停止生成"), s) : `<button class="primary small" type="submit">${h("发送")}</button>`}</div><small>${h("发送至已配置服务 ·")} ${esc(modelLabel(this.savedConfig) || t("请先在设置中配置 AI"))} ${h("· 不自动读取其他资料")}</small></form></section>`;
+    if (this.chatAvailable()) return content;
+    return `<section class="ai-gated">${content.replace('class="ai-page"', 'class="ai-page ai-locked-content" inert aria-hidden="true"')}<div class="ai-key-mask"><div role="status"><span class="ai-key-symbol" aria-hidden="true">⌁</span><strong>${h('请先配置 API 密钥')}</strong><p>${h('配置并选中模型后即可使用 AI 功能。')}</p><button class="primary" data-action="ai-configure">${h('前往配置密钥')}</button></div></div></section>`;
   }
   settingsView() {
     const preset = providerPresets.find(p => p.id === this.config.provider) ?? providerPresets[0];

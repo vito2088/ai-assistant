@@ -25,6 +25,10 @@ Desktop Assistant brings everyday actions into one place on your desktop: captur
 
 ## Features
 
+An unconfigured AI page shows a blocking overlay with a direct link to model/key setup. Drag handles in the settings feature tree reorder main tabs, subpages, and tool icons, with automatic persistence. See [AI setup guidance](docs/ai-configuration-gate.md) and [feature visibility and ordering](docs/feature-visibility.md).
+
+The unified **Reminders** tool opens a creation dialog for a countdown (with pause/resume) or a specific date and time. Enable an on-screen alert per task to slide a compact banner down from the top of the screen, stopping about 100px below the top edge. Dismiss it or snooze for five minutes. Tasks persist locally and continue while the app is minimized; missed alerts appear when the app next runs. See [timers and reminders](docs/timers-reminders.md).
+
 | Section | Feature | Details |
 | --- | --- | --- |
 | AI | Chat and content assistant | Streaming chat, stop/retry, local history, selected notes and images as context, note organization, task extraction, and screenshot explanation and translation |
@@ -39,9 +43,13 @@ Desktop Assistant brings everyday actions into one place on your desktop: captur
 | Tools | Unsaved captures | Preview, save as, and delete local capture drafts with confirmation; recover drafts after canceling a save or restarting normally |
 | Settings | — | Startup, pinning, feature visibility, interface language, model configurations, capture directories, countdown, frame rate, and cursor capture |
 
-Tools appear in this order: **Screenshot, Screen recording, Calculator**. Click an icon to open a tool and use the back button to return. Returning to the list does not stop recording; its icon shows a red indicator.
+The Tools home shows launchers and recording status. Unsaved screenshots appear only in Screenshot; videos appear only in Screen recording.
+
+Tools provide **Screenshot, Screen recording, Calculator, and Reminders** icons. Reorder them by dragging the feature tree in Settings. Click an icon to open a tool and use the back button to return. Returning to the list does not stop recording; its icon shows a red indicator.
 
 The screenshot toolbar includes text recognition and an AI-marked translation button. Results appear below the toolbar and can be copied or closed with ×. Click the toolbar button to reopen a result. Settings provides two independent options, both off by default: automatically show recognized text, and automatically show its translation after a screenshot. Enabling only translation shows only the translation; enabling only recognition shows the original text with a manual translation button that reuses the recognized text. Enabling both shows both results. With both disabled, use the toolbar manually. Once closed, a result panel will not reopen automatically during that capture.
+
+Windows uses a Rust / Win32 / Direct2D native screenshot editor and native recording region picker, countdown and controls by default. Capture, recording and text-result surfaces share the existing light theme and SVG icon shapes. The compact recording bar separates status/timing from pause/stop controls; original and translated text have separate copy actions. Annotations, copying, saving, pins, offline OCR and AI translation are retained. Rust registers global shortcuts and opens native windows directly, even while the main JavaScript thread is busy. The old Windows capture WebView, warm-up window and trial/full selector have been removed. See the [native capture migration notes](docs/native-capture-v0.2.md).
 
 Text recognition uses bundled Simplified Chinese and English OCR on the selected region, including annotations. It requires no AI model, API key, or network connection and does not upload screenshots. AI translation sends only recognized text to the selected model, translating Chinese into English and English into Chinese. Closing the window or changing the selection cancels outdated translations. Mixed text is classified by comparing Chinese character and English word counts. Automatic translation requires AI to be enabled and a usable model selected; a text-only model is sufficient. OCR runtime and language data are copied from dependencies into local assets before `npm run dev` and `npm run build`. The logo shows an AI badge only when AI is enabled and a model has been configured and selected. Disabling AI does not affect local OCR.
 
@@ -74,7 +82,7 @@ Choose an installer under the release's **Assets**. `Source code` archives are n
 
 ### Tools
 
-- **Screenshot:** Choose a display, then select a region, capture the full screen, or reuse the last region. Annotate with the toolbar. Ctrl+Z / Ctrl+Shift+Z undo/redo, Ctrl+C copies, Enter finishes and opens the save dialog, and Esc cancels. Pin annotated results as always-on-top desktop images; multiple pinned images can coexist.
+- **Screenshot:** Choose a display, then select a region, capture the full screen, or reuse the last region. Annotate with the toolbar. Ctrl+Z / Ctrl+Shift+Z undo/redo, The checkmark, Enter, or Ctrl+C copies and finishes the capture. Use Save before X, or Ctrl+S, to save a PNG; Esc cancels. Pin annotated results as always-on-top desktop images; hover controls sit below the image, including tiny captures. Multiple pins can coexist.
 - **Screen recording:** Choose a display and region, then pause, resume, or stop with the floating controls. Preview and save afterward. Windows uses native capture and H.264 encoding at 15, 30, or 60 FPS. Region dimensions are aligned to even pixel counts for H.264.
 - **Calculator:** Click keys or type an expression. Enter or `=` calculates; Esc or `C` clears. Examples: `(2+3)*4` → `20`, `200*10%` → `20`.
 - **Default directories:** Configure separate screenshot and recording directories in Settings as the initial locations for save dialogs.
@@ -104,7 +112,7 @@ All application data is stored locally:
 
 - Tasks, notes, computer profiles, project/app shortcuts, and window positions are stored in SQLite in the system application data directory. User settings are in `settings.json` in the same directory.
 - AI conversations and referenced-material snapshots are also in SQLite. Deleting capture drafts or editing original notes does not change existing chat context. API keys are not written to ordinary settings storage.
-- Screenshots and recordings start as drafts in `capture-drafts`. Drafts are removed after a successful save; unsaved drafts are retained for later recovery.
+- Windows screenshots stay in memory until copying or saving; copying creates no source draft. Native Save writes directly to the selected file. Pins, recordings, and unsaved captures on other systems use `capture-drafts` for later recovery. Temporary OCR images are cleaned after processing or cancellation.
 - Deleting a project or app shortcut removes only its record, not files on disk.
 - Force-terminating the process may leave a video unplayable if encoding has not finished.
 
@@ -112,7 +120,7 @@ All application data is stored locally:
 
 | Platform | Screenshots and recording | Validation |
 | --- | --- | --- |
-| Windows | Native Windows Graphics Capture; PNG screenshots and silent H.264/MP4 recording, without a separate FFmpeg installation | Tested locally; requires Windows 10 1903 or later |
+| Windows | GDI snapshots for screenshots and region selection; Windows Graphics Capture for silent H.264/MP4 recording, without a separate FFmpeg installation | Tested locally; requires Windows 10 1903 or later |
 | macOS / Linux | System WebView screen selection, with screenshots or MediaRecorder recording (WebM/MP4) where supported | Capability checks and permission messages provided; not yet tested on these platforms |
 
 macOS may require screen recording permission in System Settings → Privacy & Security. Linux capture depends on the desktop environment, screen-sharing portal, and WebKitGTK support. Account synchronization and cross-computer binding are not implemented yet.
@@ -150,6 +158,8 @@ Before saving, the built-in editor validates JSON syntax, field types, value ran
 Configuration uses standard JSON without comments or trailing commas. Keep the complete set of fields; the built-in editor provides access to defaults. `autostart: null` preserves the current system startup setting. Saves replace the file through a temporary file, and the built-in editor refuses to overwrite a file changed elsewhere since it was opened.
 
 Product designs, module designs, and historical implementation notes are available in [docs/](docs/).
+
+See the [capture architecture and performance research](docs/capture-architecture-research-2026-10-29.md) for the proposed native capture module and platform tradeoffs.
 
 ## License
 

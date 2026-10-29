@@ -1,0 +1,36 @@
+/* Capture surfaces share the same palette, radii and controls as Settings. */
+.capture-setup,.capture-live{padding:15px;background:var(--capture-surface);border:1px solid var(--capture-border);border-radius:12px}
+.capture-setup .tool-description{margin:0 0 18px;color:var(--capture-muted);font-size:11px;line-height:1.7}
+.capture-setup .tool-field{margin-bottom:12px;font-size:11px;font-weight:600;gap:8px}
+.capture-setup .tool-field select{height:38px;font-family:inherit;font-size:12px;font-weight:400;background:#fff}
+.capture-setup .tool-checkbox{margin:0 0 14px;font-size:11px;color:var(--capture-muted)}
+.capture-meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:0 0 16px}
+.capture-meta>span{display:inline-flex;align-items:center;gap:5px;min-height:25px;padding:3px 7px;border:1px solid var(--capture-border);border-radius:6px;color:var(--capture-muted);background:#fff;font-size:10px}
+.capture-meta svg{width:13px;height:13px;flex:none}
+.capture-launch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.capture-launch-row kbd{padding:4px 6px;border:1px solid var(--capture-border);border-radius:5px;background:#fff;color:#9994ad;font:10px ui-monospace,monospace;white-space:nowrap}
+.capture-launch,.capture-secondary,.capture-danger{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:38px;min-height:38px;padding:0 12px;border:1px solid transparent;border-radius:9px;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer;box-shadow:none;white-space:nowrap}
+.capture-launch svg,.capture-secondary svg,.capture-danger svg{width:18px;height:18px;flex:none;pointer-events:none}
+.capture-launch{background:var(--capture-accent);color:#fff}.capture-launch:hover{background:#6255cc}
+.capture-secondary{background:#fff;border-color:var(--capture-border);color:var(--capture-muted)}.capture-secondary:hover{background:var(--capture-tint);border-color:#c8bbfa;color:#6555c9}
+.capture-danger{background:#fcecef;border-color:#f2d5df;color:#c45d72}.capture-danger:hover{background:#f9dde5;border-color:#e9bbc9;color:#b24f67}
+.capture-launch:disabled,.capture-secondary:disabled,.capture-danger:disabled{opacity:.45;cursor:default}
+.capture-launch:focus-visible,.capture-secondary:focus-visible,.capture-danger:focus-visible{outline:2px solid #8a8df1;outline-offset:2px}
+.capture-live-summary{display:flex;align-items:center;gap:13px;padding:2px 0 17px}
+.capture-live-icon{display:grid;place-items:center;width:44px;height:44px;flex:none;border:1px solid #f2d5df;border-radius:12px;background:#fcecef;color:#c45d72}
+.capture-live-icon svg{width:22px;height:22px}
+.capture-live-summary>div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.capture-live-state{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--capture-muted)}
+.capture-live .recording-time{margin:0;color:var(--capture-text);font:600 26px/1.15 ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.capture-live-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;padding-top:13px;border-top:1px solid var(--capture-border)}
+.capture-live-actions button{min-width:0;padding:0 8px}
+.capture-live.is-paused .capture-live-icon{background:var(--capture-tint);border-color:var(--capture-border);color:var(--capture-accent)}
+.capture-live.is-paused .recording-dot{background:#9e96bc}
+/* Results and saved files use the same compact card edges. */
+.capture-panel>.tool-hint{margin:11px 2px 14px;color:var(--capture-muted)}
+.capture-panel .tool-output,.capture-panel .screenshot-preview,.capture-panel .capture-result{border:1px solid var(--capture-border);border-radius:12px;box-shadow:none}
+
+.capture-launch-controls{display:flex;align-items:center;gap:8px}
+.capture-launch-controls .capture-settings-button{width:38px;height:38px;min-height:38px;border:1px solid var(--capture-border);background:#fff;border-radius:9px}
+.capture-launch-controls .capture-settings-button:hover{background:var(--capture-tint);border-color:#c8bbfa;color:#6555c9}
+.capture-settings[tabindex]:focus-visible{outline:2px solid #c8bbfa;outline-offset:2px}

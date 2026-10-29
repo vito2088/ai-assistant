@@ -58,9 +58,10 @@ async function initialize() {
   const bytes = await invoke<ArrayBuffer>('read_capture_draft', { path });
   blob = new Blob([bytes], { type: 'image/png' }); url = URL.createObjectURL(blob); picture.src = url;
   await picture.decode(); status.hidden = true;
+  await invoke('capture_window_ready');
 }
 window.addEventListener('beforeunload', () => { if (url) URL.revokeObjectURL(url); });
-void initialize().catch(report);
+void initialize().catch(error=>{ report(error);void invoke('capture_window_ready').catch(console.error); });
 
 function localizeLabels() {
   document.title = t('截图贴图');

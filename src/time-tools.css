@@ -1,0 +1,12 @@
+.time-tool{display:flex;flex-direction:column;gap:12px}.time-create-dialog input{min-width:0;width:100%;border:1px solid #e0ddeb;border-radius:9px;background:#fff;padding:10px;color:#424052;font:inherit}.time-create-dialog input:focus{outline:2px solid #b4a9ee;outline-offset:1px}.time-create-dialog input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:#7164d7}.time-duration{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.time-duration label{display:flex;flex-direction:column;gap:6px;color:#777287;font-size:12px}.time-task-list{display:flex;flex-direction:column;gap:10px;margin-top:6px;padding-bottom:12px}.time-task{padding:14px;border:1px solid #e8e3ef;background:white;border-radius:12px;display:flex;flex-direction:column;gap:7px;overflow-wrap:anywhere}.time-task strong{font-size:13px}.time-task span{font-size:14px;color:#7164d7;font-variant-numeric:tabular-nums}.time-task small,.time-empty{font-size:11px;color:#9993a5}.time-task.is-due{border-color:#b8a9ec;background:#f7f3ff}.time-task-actions{display:flex;gap:7px;flex-wrap:wrap}.time-task-actions button{border:0;background:#f0ecfc;color:#6c60bd;border-radius:7px;padding:6px 9px;font-size:11px}.time-task-actions button:hover{background:#e5dff9}
+
+.time-list-toolbar{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:#9993a5;margin-bottom:2px}
+.time-create-dialog{width:calc(100% - 40px);max-width:390px;max-height:calc(100% - 40px);padding:20px;border:1px solid #dfd8ed;border-radius:16px;background:#fbfaf8;color:#403b52;overflow:auto;box-shadow:none}
+.time-create-dialog::backdrop{background:#25203335}
+.time-create-dialog form{display:flex;flex-direction:column;gap:15px}
+.time-create-dialog header{display:flex;align-items:center;justify-content:space-between;font-size:15px}
+.time-create-dialog .tool-field{gap:7px}.time-create-dialog .tool-hint{margin:0;line-height:1.6}
+.time-kind-switch{display:flex;gap:4px;background:#eeeaf5;padding:4px;border-radius:9px}
+.time-kind-switch button{flex:1;border:0;border-radius:6px;background:transparent;padding:8px;color:#92899f;font-size:12px}
+.time-kind-switch button.selected{background:white;color:#7164d7;font-weight:600}
+.time-create-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:3px}

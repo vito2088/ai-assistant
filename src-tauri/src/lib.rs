@@ -10,7 +10,20 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState}
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 mod tools;
+#[cfg(windows)]
+mod desktop_snapshot;
+mod reminders;
 mod capture_workspace;
+#[cfg(windows)]
+mod native_capture;
+#[cfg(windows)]
+mod native_editor;
+#[cfg(windows)]
+mod native_icons;
+#[cfg(windows)]
+mod native_icon_data;
+#[cfg(windows)]
+mod native_capture_service;
 mod window_recovery;
 mod ai;
 mod settings_file;
@@ -538,7 +551,7 @@ fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String>
 }
 
 fn validate_public_setting(key: &str, value: &str) -> Result<(), String> {
-    if !["ui_language", "feature_visibility", "capture_preferences", "capture_shortcuts", "autostart", "mode", "page", "document_section", "workbench_section", "selected_computer_id", "pinned", "window_x", "window_y"].contains(&key) {
+    if !["ui_language", "feature_order", "feature_visibility", "capture_preferences", "capture_shortcuts", "autostart", "mode", "page", "document_section", "workbench_section", "selected_computer_id", "pinned", "window_x", "window_y"].contains(&key) {
         return Err(format!("设置项「{key}」不支持通过通用设置接口保存"));
     }
     if key == "ui_language" && !["zh-CN", "en", "es"].contains(&value) {
@@ -565,12 +578,18 @@ pub fn run() {
     tauri::Builder::default()
         .manage(tools::ToolState::default())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app,key,event|{
+            #[cfg(windows)] native_capture_service::shortcut(app,key,event);
+            #[cfg(not(windows))] let _=(app,key,event);
+        }).build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .setup(|app| {
+            #[cfg(windows)] app.manage(native_capture_service::Service::default());
+            reminders::start(app.handle().clone()).map_err(std::io::Error::other)?;
+            #[cfg(windows)] native_capture_service::sync_shortcuts(app.handle()).map_err(std::io::Error::other)?;
             let show = MenuItem::with_id(app, "show", "显示小助手", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -599,14 +618,23 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(windows)]
+            if window.label()=="main"&&matches!(event,tauri::WindowEvent::Focused(false)){native_capture_service::edit_shortcut(window.app_handle(),None);}
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label().starts_with("capture-pin-") { return; }
                 api.prevent_close();
-                if window.label() == "capture" { capture_workspace::cancel_on_close(window.app_handle()); return; }
+                if window.label() == "reminder-alert" { let _ = window.emit("reminder-dismiss", ()); return; }
+                if window.label() == "system-capture" { capture_workspace::cancel_on_close(window.app_handle()); return; }
                 let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![
+            reminders::timed_tasks,
+            reminders::add_timed_task,
+            reminders::update_timed_task,
+            reminders::change_timed_task,
+            reminders::close_reminder_alert,
+            reminders::animate_reminder_alert,
             settings_file::read_settings_file,
             settings_file::validate_settings_json,
             settings_file::save_settings_json,
@@ -647,7 +675,17 @@ pub fn run() {
             persist_main_position,
             tools::tool_displays,
             tools::native_capture_available,
-            tools::capture_screenshot,
+            tools::start_native_capture,
+            tools::configure_native_capture,
+            tools::native_capture_status,
+            tools::native_capture_runtime,
+            tools::sync_native_capture_shortcuts,
+            tools::register_native_capture_shortcut,
+            tools::unregister_native_capture_shortcut,
+            tools::edit_native_capture_shortcut,
+            tools::control_native_capture,
+            tools::native_capture_ocr_result,
+            tools::native_capture_pending_ocr,
             tools::start_screen_recording,
             tools::stop_screen_recording,
             tools::screen_recording_status,
@@ -661,10 +699,9 @@ pub fn run() {
             capture_workspace::save_capture_draft,
             capture_workspace::delete_capture_draft,
             capture_workspace::list_capture_drafts,
-            capture_workspace::open_capture_overlay,
-            capture_workspace::close_capture_overlay,
-            capture_workspace::capture_toolbar,
-            capture_workspace::show_recording_border,
+            capture_workspace::open_system_capture_editor,
+            capture_workspace::capture_window_ready,
+            capture_workspace::close_system_capture_editor,
             capture_workspace::pin_capture,
             capture_workspace::close_pinned_capture,
             quit_app

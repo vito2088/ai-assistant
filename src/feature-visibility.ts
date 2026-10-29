@@ -2,7 +2,7 @@ export const featureGroups = [
   { id: 'ai', label: 'AI', children: [{ id: 'aiChat', label: 'AI 聊天与内容助手' }] },
   { id: 'document', label: '文档', children: [{ id: 'todo', label: '待办' }, { id: 'note', label: '速记' }] },
   { id: 'workbench', label: '工作台', children: [{ id: 'project', label: '项目' }, { id: 'app', label: '应用' }] },
-  { id: 'tools', label: '工具', children: [{ id: 'screenshot', label: '截图' }, { id: 'recording', label: '录屏' }, { id: 'calculator', label: '计算器' }] },
+  { id: 'tools', label: '工具', children: [{ id: 'screenshot', label: '截图' }, { id: 'recording', label: '录屏' }, { id: 'calculator', label: '计算器' }, { id: 'reminder', label: '提醒' }] },
 ] as const;
 
 export type FeatureGroup = typeof featureGroups[number]['id'];
@@ -16,6 +16,7 @@ export function parseVisibility(saved: string | null): FeatureVisibility {
     const parsed: unknown = JSON.parse(saved ?? '{}');
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) value = parsed as Record<string, unknown>;
   } catch { /* Missing or damaged preferences keep all features available. */ }
+  if (typeof value.timer === 'boolean') value.reminder = typeof value.reminder === 'boolean' ? value.reminder || value.timer : value.timer;
   return Object.fromEntries(featureGroups.flatMap(group => group.children.map(child =>
     [child.id, typeof value[child.id] === 'boolean' ? value[child.id] : true],
   ))) as FeatureVisibility;

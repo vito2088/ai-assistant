@@ -6,7 +6,7 @@ export const defaultShortcuts = { screenshot: 'Ctrl+Alt+KeyA', recording: 'Ctrl+
 type Bindings = Record<CaptureKind, string>;
 type Backend = {
   reset(): Promise<void>;
-  register(key: string, handler: () => void): Promise<void>;
+  register(key: string, handler: () => void, kind?: CaptureKind): Promise<void>;
   unregister(key: string): Promise<void>;
   save(values: Bindings): Promise<void>;
 };
@@ -36,7 +36,7 @@ export class CaptureShortcuts {
   private async register(kind: CaptureKind, key: string) {
     await this.backend.register(key, () => {
       if (!this.busy && this.active[kind] === key) this.trigger(kind, key);
-    });
+    }, kind);
   }
 
   async initialize(saved: string | null) {

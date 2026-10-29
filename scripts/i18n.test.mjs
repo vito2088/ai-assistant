@@ -47,7 +47,7 @@ test('all static UI messages have both translations and preserve interpolation a
       assert.deepEqual(params(entry[language]), params(key), `${key}: ${language}`);
     }
   }
-  for (const name of ['main', 'tools', 'ai', 'capture-overlay', 'capture-pin', 'settings-editor', 'capture-translation']) {
+  for (const name of ['main', 'tools', 'ai', 'system-capture-editor', 'capture-pin', 'settings-editor', 'capture-translation']) {
     const source = await readFile(new URL(`../src/${name}.ts`, import.meta.url), 'utf8');
     const ast = ts.createSourceFile(name, source, ts.ScriptTarget.Latest, true);
     function visit(node) {

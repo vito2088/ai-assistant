@@ -8,7 +8,8 @@ import './style.css';
 import { Tools } from './tools';
 import { Ai } from './ai';
 import { openSettingsEditor, type SettingsDocument } from './settings-editor';
-import { featureGroups, parseVisibility, groupState, setFeatureVisible, visiblePages, availablePage } from './feature-visibility';
+import { parseFeatureOrder, orderedGroups, moveFeature, type FeatureOrder } from './feature-order';
+import { featureGroups, parseVisibility, groupState, setFeatureVisible } from './feature-visibility';
 
 type Mode = 'expanded' | 'icon' | 'compact';
 type Page = 'document' | 'workbench' | 'tools' | 'ai' | 'settings';
@@ -25,6 +26,10 @@ type ComputerDraft = { id?: string; name: string; platform: Platform };
 const windowRef = getCurrentWindow();
 const app = document.querySelector<HTMLDivElement>('#app')!;
 let visibility = parseVisibility(null);
+let featureOrder = parseFeatureOrder(null);
+let savingFeatureOrder = false;
+const orderedFeatures = () => orderedGroups(featureOrder);
+const orderedPages = (): Page[] => [...orderedFeatures().filter(group=>groupState(visibility,group.id).visible).map(group=>group.id), 'settings'];
 let savingVisibility = false;
 let mode: Mode = 'expanded';
 let page: Page = 'document';
@@ -196,8 +201,7 @@ function notesPage() {
 
 function documentPage() {
   return `<div class="document-page"><nav class="document-tabs" aria-label="${h("文档子栏目")}">
-    ${visibility.todo ? `<button class="document-tab ${documentSection === 'todo' ? 'selected' : ''}" data-action="document-section" data-section="todo" aria-current="${documentSection === 'todo' ? 'page' : 'false'}">${h("待办")}</button>` : ''}
-    ${visibility.note ? `<button class="document-tab ${documentSection === 'note' ? 'selected' : ''}" data-action="document-section" data-section="note" aria-current="${documentSection === 'note' ? 'page' : 'false'}">${h("速记")}</button>` : ''}
+    ${orderedFeatures().find(group=>group.id==='document')!.children.filter(child=>visibility[child.id]).map(child=>`<button class="document-tab ${documentSection===child.id?'selected':''}" data-action="document-section" data-section="${child.id}" aria-current="${documentSection===child.id?'page':'false'}">${h(child.label)}</button>`).join('')}
   </nav>${documentSection === 'todo' ? todoPage() : notesPage()}</div>`;
 }
 
@@ -211,7 +215,7 @@ function workbenchPage() {
       ${computerDraft.id ? '' : `<select id="computer-platform" aria-label="${h("电脑系统")}"><option value="windows" ${computerDraft.platform === 'windows' ? 'selected' : ''}>Windows</option><option value="macos" ${computerDraft.platform === 'macos' ? 'selected' : ''}>macOS</option><option value="linux" ${computerDraft.platform === 'linux' ? 'selected' : ''}>Linux</option></select>`}
       <button type="submit" class="primary small">${computerDraft.id ? tr("保存名称") : tr("添加")}</button></form>` : ''}
     ${selected ? `<div class="computer-toolbar"><span>${platformName(selected.platform)} · ${selected.isCurrent ? tr("当前电脑") : tr("待绑定到另一台电脑")}</span><div><button data-action="rename-computer" title="${h("重命名")}">${h("改名")}</button>${selected.isCurrent ? '' : `<button data-action="delete-computer" title="${h("删除电脑档案")}">${h("删除")}</button>`}</div></div>
-    <nav class="document-tabs workbench-tabs" aria-label="${h("工作台子栏目")}">${visibility.project ? `<button class="document-tab ${workbenchSection === 'project' ? 'selected' : ''}" data-action="workbench-section" data-section="project">${h("项目")}</button>` : ''}${visibility.app ? `<button class="document-tab ${workbenchSection === 'app' ? 'selected' : ''}" data-action="workbench-section" data-section="app">${h("应用")}</button>` : ''}${selected.isCurrent ? `<button class="workbench-add" data-action="new-entry" data-kind="${workbenchSection}" title="${h("添加{0}", [workbenchSection === 'project' ? tr("项目") : tr("应用")])}" aria-label="${h("添加{0}", [workbenchSection === 'project' ? tr("项目") : tr("应用")])}">${h("添加{0}", [workbenchSection === 'project' ? tr("项目") : tr("应用")])}</button>` : ''}</nav>
+    <nav class="document-tabs workbench-tabs" aria-label="${h("工作台子栏目")}">${orderedFeatures().find(group=>group.id==='workbench')!.children.filter(child=>visibility[child.id]).map(child=>`<button class="document-tab ${workbenchSection===child.id?'selected':''}" data-action="workbench-section" data-section="${child.id}">${h(child.label)}</button>`).join('')}${selected.isCurrent ? `<button class="workbench-add" data-action="new-entry" data-kind="${workbenchSection}" title="${h("添加{0}", [workbenchSection === 'project' ? tr("项目") : tr("应用")])}" aria-label="${h("添加{0}", [workbenchSection === 'project' ? tr("项目") : tr("应用")])}">${h("添加{0}", [workbenchSection === 'project' ? tr("项目") : tr("应用")])}</button>` : ''}</nav>
     ${selected.isCurrent ? entryPage(workbenchSection) : `<section class="remote-computer"><strong>${h("这台电脑尚未绑定")}</strong><p>${h("项目与应用的路径属于各自的电脑。以后开启同步后，可在“{0}”上绑定此档案并添加入口。", [selected.name])}</p></section>`}` : `<div class="empty"><strong>${h("还没有电脑档案")}</strong></div>`}
   </div>`;
 }
@@ -243,13 +247,13 @@ function entryForm() {
 }
 
 function featureSettings() {
-  return `<div class="settings-card feature-settings"><div><strong id="feature-settings-title">${h("功能显示")}</strong><p>${h("勾选需要显示的功能，自动保存；隐藏不删除数据。")}</p></div>
-    <ul class="feature-tree" aria-labelledby="feature-settings-title">${featureGroups.map(group => {
+  const handle = (id: string, label: string) => `<button type="button" class="feature-drag-handle" draggable="${!savingFeatureOrder}" data-order-handle="${id}" title="${h('按住拖动排序，或按 Alt 加上下方向键')}" aria-label="${h('调整顺序')} ${h(label)}">⠿</button>`;
+  return `<div class="settings-card feature-settings"><div><strong id="feature-settings-title">${h('功能显示')}</strong><p>${h('勾选显示，按住左侧手柄拖动排序；自动保存。')}</p></div>
+    <ul class="feature-tree" aria-labelledby="feature-settings-title" aria-busy="${savingFeatureOrder}">${orderedFeatures().map(group => {
       const state = groupState(visibility, group.id);
-      return `<li><label class="feature-parent"><input type="checkbox" data-feature="${group.id}" ${state.checked ? 'checked' : ''} ${savingVisibility ? 'disabled' : ''}><span>${h(group.label)}</span><small>${group.children.filter(child => visibility[child.id]).length}/${group.children.length}</small></label>
-        <ul>${group.children.map(child => `<li><label><input type="checkbox" data-feature="${child.id}" ${visibility[child.id] ? 'checked' : ''} ${savingVisibility ? 'disabled' : ''}><span>${h(child.label)}</span></label></li>`).join('')}</ul></li>`;
-    }).join('')}</ul><p class="feature-settings-note">${h("设置始终显示，可随时恢复隐藏的功能。")}</p>
-  </div>`;
+      return `<li data-order-id="${group.id}" data-order-parent="root"><div class="feature-order-row">${handle(group.id, group.label)}<label class="feature-parent"><input type="checkbox" data-feature="${group.id}" ${state.checked?'checked':''} ${savingVisibility || savingFeatureOrder?'disabled':''}><span>${h(group.label)}</span><small>${group.children.filter(child=>visibility[child.id]).length}/${group.children.length}</small></label></div>
+        <ul>${group.children.map(child=>`<li data-order-id="${child.id}" data-order-parent="${group.id}"><div class="feature-order-row">${handle(child.id, child.label)}<label><input type="checkbox" data-feature="${child.id}" ${visibility[child.id]?'checked':''} ${savingVisibility || savingFeatureOrder?'disabled':''}><span>${h(child.label)}</span></label></div></li>`).join('')}</ul></li>`;
+    }).join('')}</ul><p class="feature-settings-note">${h('设置始终显示，可随时恢复隐藏的功能。')}</p></div>`;
 }
 
 function settingsPage() {
@@ -267,8 +271,8 @@ function settingsPage() {
 }
 
 function expanded() {
-  return `<div class="shell expanded-shell">${topBar()}<nav class="tabs" style="grid-template-columns:repeat(${visiblePages(visibility).length},minmax(0,1fr))">
-    ${visiblePages(visibility).map(p => `<button class="tab ${page === p ? 'selected' : ''}" data-action="page" data-page="${p}">${({ document: tr("文档"), workbench: tr("工作台"), tools: tr("工具"), ai: 'AI', settings: tr("设置") } as Record<Page, string>)[p]}${p === 'tools' ? `<span class="tools-recording-dot recording-dot" ${tools.recording ? '' : 'hidden'} aria-label="${h("正在录屏")}"></span>` : ''}</button>`).join('')}
+  return `<div class="shell expanded-shell">${topBar()}<nav class="tabs" style="grid-template-columns:repeat(${orderedPages().length},minmax(0,1fr))">
+    ${orderedPages().map(p => `<button class="tab ${page === p ? 'selected' : ''}" data-action="page" data-page="${p}">${({ document: tr("文档"), workbench: tr("工作台"), tools: tr("工具"), ai: 'AI', settings: tr("设置") } as Record<Page, string>)[p]}${p === 'tools' ? `<span class="tools-recording-dot recording-dot" ${tools.recording ? '' : 'hidden'} aria-label="${h("正在录屏")}"></span>` : ''}</button>`).join('')}
   </nav>${page === 'document' ? documentPage() : page === 'workbench' ? workbenchPage() : page === 'tools' ? tools.view() : page === 'ai' ? ai.view() : settingsPage()}<footer class="footer"><span>DESKTOP ASSISTANT</span><span>v0.1</span></footer></div>`;
 }
 
@@ -293,10 +297,10 @@ function compactView() {
 }
 
 function normalizeNavigation() {
-  page = availablePage(visibility, page);
+  if (page !== 'settings' && !groupState(visibility,page).visible) page = orderedFeatures().find(group=>groupState(visibility,group.id).visible)?.id ?? 'settings';
   if (!visibility[documentSection]) documentSection = visibility.todo ? 'todo' : 'note';
   if (!visibility[workbenchSection]) workbenchSection = visibility.project ? 'project' : 'app';
-  tools.setVisibleSections(featureGroups.find(group => group.id === 'tools')!.children.filter(child => visibility[child.id]).map(child => child.id));
+  tools.setVisibleSections(orderedFeatures().find(group => group.id === 'tools')!.children.filter(child => visibility[child.id]).map(child => child.id));
 }
 
 const scrollPositions = new Map<string, { top: number; bottom: boolean }>();
@@ -337,6 +341,7 @@ function render() {
   const settingsBody = app.querySelector('.settings-page');
   if (settingsBody) settingsBody.scrollTop = settingsScroll;
   if (focusedFeature) app.querySelector<HTMLInputElement>(`[data-feature="${focusedFeature}"]`)?.focus({ preventScroll: true });
+  tools.afterRender();
   const dialog = app.querySelector<HTMLDialogElement>('.compact-todo-dialog');
   if (dialog) { dialog.showModal(); dialog.querySelector<HTMLInputElement>('input')?.focus(); }
 }
@@ -380,6 +385,24 @@ function toggleEntryMenu(button: HTMLElement) {
 }
 
 async function runAction(action: string, button: HTMLElement) {
+  if (action === 'capture-settings') {
+    const kind = button.dataset.kind;
+    if (kind !== 'screenshot' && kind !== 'recording') return;
+    page = 'settings'; render();
+    await saveSetting('page', page);
+    await reloadFileSettings();
+    const body = app.querySelector<HTMLElement>('.settings-page');
+    const target = app.querySelector<HTMLElement>(`#capture-settings-${kind}`);
+    if (body && target) {
+      body.scrollTop += target.getBoundingClientRect().top - body.getBoundingClientRect().top - 12;
+      target.focus({ preventScroll: true });
+    }
+    return;
+  }
+  if (action === 'ai-configure') {
+    page='settings'; render(); ai.openConfiguration(); render();
+    await saveSetting('page',page); return;
+  }
   if (await ai.action(action, button)) return;
   if (await tools.action(action, button)) return;
   const id = Number(button.dataset.id);
@@ -507,6 +530,58 @@ async function runAction(action: string, button: HTMLElement) {
     case 'launch': await invoke('launch_entry', { id }); await refresh(); toast(tr("已发送打开请求")); break;
   }
 }
+
+async function persistFeatureOrder(next: FeatureOrder) {
+  if (savingFeatureOrder || savingVisibility || settingsFile?.error || JSON.stringify(next)===JSON.stringify(featureOrder)) return;
+  savingFeatureOrder=true;
+  app.querySelectorAll<HTMLInputElement>('[data-feature]').forEach(input=>input.disabled=true);
+  try { await saveSetting('feature_order',JSON.stringify(next)); featureOrder=next; }
+  catch (error) { toast(tr('保存排序失败：{0}',[errorText(error)])); }
+  finally { savingFeatureOrder=false; render(); }
+}
+let featureDrag: { id: string; parent: string } | null = null;
+const clearFeatureDrag = () => app.querySelectorAll('.order-before,.order-after,.order-dragging').forEach(node=>node.classList.remove('order-before','order-after','order-dragging'));
+app.addEventListener('focusin', event => tools.shortcutFocus(event.target as HTMLElement));
+app.addEventListener('focusout', event => tools.shortcutFocus(event.relatedTarget as HTMLElement | null));
+app.addEventListener('dragstart', event=>{
+  const handle=(event.target as HTMLElement).closest<HTMLElement>('[data-order-handle]');
+  if (!handle) return;
+  if (savingFeatureOrder || savingVisibility || settingsFile?.error) { event.preventDefault();return; }
+  const row=handle.closest<HTMLElement>('[data-order-id]')!;
+  featureDrag={id:row.dataset.orderId!,parent:row.dataset.orderParent!};
+  event.dataTransfer?.setData('text/plain',featureDrag.id);
+  if(event.dataTransfer) event.dataTransfer.effectAllowed='move';
+  row.querySelector('.feature-order-row')?.classList.add('order-dragging');
+});
+app.addEventListener('dragover', event=>{
+  const row=(event.target as HTMLElement).closest<HTMLElement>('[data-order-id]');
+  if(!featureDrag || !row || row.dataset.orderParent!==featureDrag.parent || row.dataset.orderId===featureDrag.id) return;
+  event.preventDefault(); if(event.dataTransfer) event.dataTransfer.dropEffect='move';
+  clearFeatureDrag();
+  const line=row.querySelector<HTMLElement>('.feature-order-row')!;
+  line.classList.add(event.clientY>line.getBoundingClientRect().top+line.offsetHeight/2?'order-after':'order-before');
+});
+app.addEventListener('drop', event=>{
+  const row=(event.target as HTMLElement).closest<HTMLElement>('[data-order-id]');
+  const source=featureDrag;featureDrag=null;
+  if(source && row && row.dataset.orderParent===source.parent) {
+    event.preventDefault();
+    const line=row.querySelector<HTMLElement>('.feature-order-row')!;
+    const after=event.clientY>line.getBoundingClientRect().top+line.offsetHeight/2;
+    void persistFeatureOrder(moveFeature(featureOrder,source.id,row.dataset.orderId!,after));
+  }
+  clearFeatureDrag();
+});
+app.addEventListener('dragend',()=>{featureDrag=null;clearFeatureDrag();});
+app.addEventListener('keydown',event=>{
+  const handle=(event.target as HTMLElement).closest<HTMLElement>('[data-order-handle]');
+  if(!handle || !event.altKey || !['ArrowUp','ArrowDown'].includes(event.key)) return;
+  event.preventDefault();
+  const row=handle.closest<HTMLElement>('[data-order-id]')!;
+  const peers=Array.from(row.parentElement!.children) as HTMLElement[];
+  const target=peers[peers.indexOf(row)+(event.key==='ArrowUp'?-1:1)];
+  if(target) void persistFeatureOrder(moveFeature(featureOrder,row.dataset.orderId!,target.dataset.orderId!,event.key==='ArrowDown')).then(()=>app.querySelector<HTMLElement>(`[data-order-handle="${row.dataset.orderId}"]`)?.focus());
+});
 
 app.addEventListener('click', async event => {
   const button = (event.target as HTMLElement).closest<HTMLElement>('[data-action]');
@@ -736,8 +811,8 @@ async function init() {
   try {
     setLocale(await setting('ui_language'));
     document.title = tr('桌面小助手');
-    const [savedMode, savedPage, savedSection, savedWorkbenchSection, savedComputerId, savedPinned, x, y, startup, savedVisibility] = await Promise.all([
-      setting('mode'), setting('page'), setting('document_section'), setting('workbench_section'), setting('selected_computer_id'), setting('pinned'), setting('window_x'), setting('window_y'), isEnabled().catch(() => false), setting('feature_visibility'),
+    const [savedMode, savedPage, savedSection, savedWorkbenchSection, savedComputerId, savedPinned, x, y, startup, savedVisibility, savedOrder] = await Promise.all([
+      setting('mode'), setting('page'), setting('document_section'), setting('workbench_section'), setting('selected_computer_id'), setting('pinned'), setting('window_x'), setting('window_y'), isEnabled().catch(() => false), setting('feature_visibility'), setting('feature_order'),
     ]);
     mode = savedMode === 'icon' ? 'icon' : savedMode === 'compact' || savedMode === 'single' ? 'compact' : 'expanded';
     page = savedPage === 'project' || savedPage === 'software' || savedPage === 'workbench' ? 'workbench' : savedPage === 'settings' ? 'settings' : savedPage === 'tools' ? 'tools' : savedPage === 'ai' ? 'ai' : 'document';
@@ -752,6 +827,7 @@ async function init() {
       autostart = await isEnabled();
     }
     visibility = parseVisibility(savedVisibility);
+    featureOrder = parseFeatureOrder(savedOrder);
     normalizeNavigation();
     await applyMode(mode, false);
     if (savedMode === 'single') await saveSetting('mode', 'compact');
@@ -777,8 +853,8 @@ async function reloadFileSettings() {
     settingsFile = await invoke<SettingsDocument>('read_settings_file');
     const effective = settingsFile.error ? settingsFile.defaults : settingsFile.content;
     if (effective !== settingsRevision || settingsDeferred) {
-      const [locale, features, pin, startup] = await Promise.all([setting('ui_language'), setting('feature_visibility'), setting('pinned'), setting('autostart')]);
-      setLocale(locale); document.title = tr('桌面小助手'); visibility = parseVisibility(features); normalizeNavigation();
+      const [locale, features, pin, startup, order] = await Promise.all([setting('ui_language'), setting('feature_visibility'), setting('pinned'), setting('autostart'), setting('feature_order')]);
+      setLocale(locale); document.title = tr('桌面小助手'); visibility = parseVisibility(features); featureOrder = parseFeatureOrder(order); normalizeNavigation();
       await invoke('set_tray_recording', { active: tools.recording });
       pinned = pin === 'true'; await windowRef.setAlwaysOnTop(pinned);
       if (startup !== null) {

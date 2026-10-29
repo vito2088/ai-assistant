@@ -1,10 +1,9 @@
 import { t, h, setLocale } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { emit } from '@tauri-apps/api/event';
 import { join } from '@tauri-apps/api/path';
 import { save } from '@tauri-apps/plugin-dialog';
-import './capture-overlay.css';
+import './system-capture-editor.css';
 import { captureIcon } from './capture-icons';
 import { translateCaptureText } from './capture-translation';
 
@@ -12,9 +11,9 @@ type Point = { x: number; y: number };
 type Rect = Point & { width: number; height: number };
 type Kind = 'select' | 'pen' | 'arrow' | 'rectangle' | 'ellipse' | 'text' | 'mosaic' | 'step';
 type Mark = { kind: Kind; points: Point[]; color: string; width: number; text?: string };
-const query = new URLSearchParams(location.search);
-const recording = query.get('mode') === 'recording';
-const path = query.get('path')!;
+type CaptureSession = { id: string; path: string };
+const recording = false;
+let sessionId: string | null = null;
 const root = document.querySelector<HTMLDivElement>('#capture-root')!;
 let region: Rect | null = null;
 let tool: Kind = 'select';
@@ -23,8 +22,8 @@ let draft: Mark | null = null;
 let color = '#ff4d5a', thickness = 4;
 let drag: { start: Point; original: Rect | null; operation: string } | null = null;
 let activePointerId: number | null = null;
-let completing = false, counting = false, countdownToken = 0, toolbar = false;
-let image: ImageBitmap;
+let completing = false; const counting = false, toolbar = false;
+let image: ImageBitmap | undefined;
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d')!;
 const border = document.createElement('div'); border.className = 'selection';
@@ -42,8 +41,6 @@ let ocrModule: typeof import('./capture-ocr') | undefined;
 const hint = document.createElement('div'); hint.className = 'capture-hint';
 const textInput = document.createElement('textarea'); textInput.className = 'annotation-text'; textInput.placeholder = t("输入文字，Ctrl+Enter 确认"); textInput.hidden = true;
 let textPoint: Point | null = null;
-if (!recording) dock.append(bar, ocrPanel);
-root.append(canvas, border, recording ? bar : dock, hint, textInput);
 const names: [Kind, string, string][] = [['select', '选区 (V)', '⌖'], ['pen', '画笔 (P)', '✎'], ['arrow', '箭头 (A)', '↗'], ['rectangle', '矩形 (R)', '□'], ['ellipse', '椭圆 (O)', '○'], ['text', '文字 (T)', 'T'], ['mosaic', '马赛克 (M)', '▦'], ['step', '序号 (N)', '①']];
 function button(action: string, label: string, text = label, extra = '') {
   const attrs = extra.includes('class="') ? extra.replace('class="', 'class="capture-icon-button ') : `class="capture-icon-button" ${extra}`;
@@ -52,7 +49,7 @@ function button(action: string, label: string, text = label, extra = '') {
 }
 function renderBar() {
   if (toolbar) return;
-  bar.innerHTML = `${button('full', t("全屏"), t("全屏"))}${button('last', t("上次选区"), t("上次"))}${recording ? '' : names.map(([kind, label, icon]) => button(kind, label, icon, `class="${tool === kind ? 'active' : ''}"`)).join('')}${recording ? '' : `<span class="separator"></span><input id="color" type="color" aria-label="${h("标注颜色")}" value="` + color + `"><select id="width" aria-label="${h("线条粗细")}"><option value="2">${h("细")}</option><option value="4">${h("中")}</option><option value="8">${h("粗")}</option></select>` + button('undo', t("撤销 Ctrl+Z"), '↶', marks.length ? '' : 'disabled') + button('redo', t("重做 Ctrl+Shift+Z"), '↷', redo.length ? '' : 'disabled') + button('pin', t("固定到桌面"), t("固定"), region ? '' : 'disabled') + button('copy', t("复制图片 Ctrl+C"), t("复制"))}${button('cancel', t("取消 Esc"), t("取消"))}${button('done', recording ? t("倒计时后开始录制") : t("完成标注并保存 Enter"), recording ? t("开始录制") : t("完成"), `class="primary" ${region ? '' : 'disabled'}`)}`;
+  bar.innerHTML = `${button('full', t("全屏"), t("全屏"))}${button('last', t("上次选区"), t("上次"))}${recording ? '' : names.map(([kind, label, icon]) => button(kind, label, icon, `class="${tool === kind ? 'active' : ''}"`)).join('')}${recording ? '' : `<span class="separator"></span><input id="color" type="color" aria-label="${h("标注颜色")}" value="` + color + `"><select id="width" aria-label="${h("线条粗细")}"><option value="2">${h("细")}</option><option value="4">${h("中")}</option><option value="8">${h("粗")}</option></select>` + button('undo', t("撤销 Ctrl+Z"), '↶', marks.length ? '' : 'disabled') + button('redo', t("重做 Ctrl+Shift+Z"), '↷', redo.length ? '' : 'disabled') + button('pin', t("固定到桌面"), t("固定"), region ? '' : 'disabled')}${button('cancel', t("取消 Esc"), t("取消"))}${button('done', recording ? t("倒计时后开始录制") : t("复制并完成 Enter"), recording ? t("开始录制") : t("完成"), `class="primary" ${region ? '' : 'disabled'}`)}`;
   if (!recording) bar.querySelector('[data-do="cancel"]')!.insertAdjacentHTML('beforebegin', button('save', t('另存为本地图片 Ctrl+S'), '', region ? '' : 'disabled'));
   if (!recording) bar.querySelector('[data-do="save"]')!.insertAdjacentHTML('beforebegin', button('ocr', t('识别文字'), '', `aria-controls="capture-ocr-result" aria-expanded="${ocrOpen && sourceVisible}" class="${ocrOpen && sourceVisible ? 'active' : ''}" ${region ? '' : 'disabled'}`));
   if (!recording) bar.querySelector('[data-do="save"]')!.insertAdjacentHTML('beforebegin', button('translate', t('翻译文字（AI）'), '', `aria-controls="capture-ocr-result" aria-expanded="${ocrOpen && translateRequested}" class="capture-translate-button ${ocrOpen && translateRequested ? 'active' : ''}" ${region && aiEnabled ? '' : 'disabled'}`));
@@ -150,7 +147,7 @@ function drawMark(context: CanvasRenderingContext2D, mark: Mark) {
   if (mark.kind === 'mosaic') {
     if (r.width >= 1 && r.height >= 1) {
       const pixel = document.createElement('canvas'); pixel.width = Math.max(1, Math.ceil(r.width / 18)); pixel.height = Math.max(1, Math.ceil(r.height / 18));
-      pixel.getContext('2d')!.drawImage(image, r.x, r.y, r.width, r.height, 0, 0, pixel.width, pixel.height);
+      pixel.getContext('2d')!.drawImage(image!, r.x, r.y, r.width, r.height, 0, 0, pixel.width, pixel.height);
       context.imageSmoothingEnabled = false; context.drawImage(pixel, r.x, r.y, r.width, r.height);
     }
   } else if (mark.kind === 'text') {
@@ -175,6 +172,7 @@ function drawMark(context: CanvasRenderingContext2D, mark: Mark) {
   context.restore();
 }
 function paint(output = false) {
+  if (!image) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(image, 0, 0);
   ctx.save();
   if (region) { ctx.beginPath(); ctx.rect(region.x, region.y, region.width, region.height); ctx.clip(); }
@@ -267,27 +265,23 @@ async function saveAs() {
     if (ocrQueued) void runOcr();
   }
 }
+async function copyAndClose() {
+  if (!region || completing || counting) return;
+  completing = true;
+  try {
+    commitText();
+    const blob = await png();
+    await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
+    localStorage.setItem(`capture-region-${canvas.width}x${canvas.height}`,JSON.stringify(region));
+    invalidateOcr();
+    await emit('capture-copied');
+  } finally { completing = false; }
+}
 async function done(pin = false) {
   if (!region || completing || counting) return;
   invalidateOcr();
   commitText();
   localStorage.setItem(`capture-region-${canvas.width}x${canvas.height}`, JSON.stringify(region));
-  if (recording) {
-    counting = true; const token = ++countdownToken; bar.hidden = true; border.hidden = true;
-    const counter = document.createElement('div'); counter.className = 'countdown'; root.append(counter);
-    for (let n = Number(query.get('countdown') ?? 3); n > 0; n--) {
-      counter.textContent = `${n}`; hint.textContent = t("准备录制 · Esc 返回选区"); await new Promise(r => setTimeout(r, 1000));
-      if (token !== countdownToken) { counter.remove(); return; }
-    }
-    counter.remove(); completing = true;
-    try {
-      prepareRecordingToolbar();
-      await invoke('capture_toolbar');
-      // Paint the small control bar before starting the encoder.
-      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-      await emit('capture-selected', { region: { x: Math.floor(region.x), y: Math.floor(region.y), width: Math.floor(region.width) & ~1, height: Math.floor(region.height) & ~1 } });
-    } catch (error) { await emit('capture-cancel'); throw error; }
-  } else {
     completing = true;
     hint.textContent = t("正在生成截图…");
     try {
@@ -300,9 +294,9 @@ async function done(pin = false) {
       if (pin) {
         await invoke('pin_capture', { path: output, bounds: { x: region.x / canvas.width, y: region.y / canvas.height, width: region.width / canvas.width, height: region.height / canvas.height } });
       }
-      await getCurrentWindow().hide(); await emit('capture-finished', { path: output, pinned: pin });
+      // The main window owns the draft and closes this one-shot editor.
+      await emit('capture-finished', { path: output, pinned: pin });
     } finally { completing = false; }
-  }
 }
 async function action(a: string) {
   if (completing && !toolbar) return;
@@ -315,12 +309,10 @@ async function action(a: string) {
   if (a === 'translate-result' && aiEnabled && ocrText && !translating) { translateRequested = true; void runTranslation(ocrText, ocrRevision); return; }
   if (a === 'ocr' || a === 'retry-ocr') { if (a === 'ocr') { sourceVisible = true; translateRequested = false; } scheduleOcr(true); return; }
   if (a === 'close-ocr') { ocrOpen = false; sourceVisible = false; ocrDismissed = true; translateRequested = false; invalidateOcr(); renderOcr(); return; }
-  if (a === 'done') { await done(); return; }
+  if (a === 'done') { if(recording) await done(); else await copyAndClose(); return; }
   if (a === 'pin' && !recording) { await done(true); return; }
   if (a === 'save' && !recording) { await saveAs(); return; }
-  if (a === 'copy') { const blob = await png(); await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); hint.textContent = t("图片已复制，可以继续编辑或完成保存"); return; }
-  if (a === 'stop') { await emit('tools-stop-recording'); return; }
-  if (a === 'pause') { await emit('capture-pause'); return; }
+  if (a === 'copy' && !recording) { await copyAndClose(); return; }
   if (a === 'full') region = { x: 0, y: 0, width: canvas.width, height: canvas.height };
   if (a === 'last') { const saved = localStorage.getItem(`capture-region-${canvas.width}x${canvas.height}`); if (saved) region = JSON.parse(saved); }
   if (a === 'undo' && marks.length) redo.push(marks.pop()!);
@@ -332,12 +324,11 @@ async function action(a: string) {
 root.addEventListener('click', e => { const a = (e.target as HTMLElement).closest<HTMLElement>('[data-do]')?.dataset.do; if (a) void action(a).catch(error => { hint.textContent = String(error); }); });
 bar.addEventListener('change', e => { const el = e.target as HTMLInputElement; if (el.id === 'color') color = el.value; if (el.id === 'width') thickness = Number(el.value); });
 document.addEventListener('keydown', e => {
+  if (!sessionId) return;
   if ((e.target as HTMLElement).closest('.capture-ocr') && e.key !== 'Escape') return;
-  if (toolbar) { if (e.key === 'Escape') void emit('tools-stop-recording'); return; }
   if (e.target === textInput) { if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); commitText(); renderBar(); paint(); scheduleOcr(); } return; }
   let a = '';
   if (e.key === 'Escape') {
-    if (counting && !completing) { ++countdownToken; counting = false; bar.hidden = false; paint(); return; }
     a = 'cancel';
   }
   if (e.key === 'Enter') a = 'done';
@@ -347,24 +338,11 @@ document.addEventListener('keydown', e => {
   if (a) { e.preventDefault(); void action(a).catch(error => { hint.textContent = String(error); }); }
 });
 window.addEventListener('resize', () => { if (!toolbar && image) paint(); });
-let startedAt = 0, paused = false, frozen = '00:00';
-function prepareRecordingToolbar() {
-  if (toolbar) return;
-  toolbar = true; document.body.classList.add('recording-mode'); image.close(); canvas.remove(); border.remove(); textInput.remove(); hint.remove();
-  root.className = 'record-toolbar'; bar.className = 'record-controls'; bar.hidden = false; bar.removeAttribute('style');
-  bar.innerHTML = `<span class="red-dot"></span><span>${h('正在准备录制…')}</span>`;
-}
-void listen<{active: boolean; paused: boolean; startedAt: number}>('tools-recording', async ({payload}) => {
-  if (!recording || !payload.active) return;
-  startedAt = payload.startedAt; paused = payload.paused;
-  prepareRecordingToolbar();
-  bar.innerHTML = `<span data-tauri-drag-region class="record-drag" title="${h("拖动控制条")}">${captureIcon('drag')}</span><span class="red-dot ${paused ? 'paused' : ''}"></span><time id="record-clock" aria-label="${h("录制时长")}">${frozen}</time><span class="separator"></span>${button('pause', paused ? t("继续录制") : t("暂停录制"), paused ? t("继续") : t("暂停"))}${button('stop', t("结束录制并预览"), t("结束"), 'class="primary"')}`;
-});
-setInterval(() => {
-  if (!toolbar || paused) return; const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); frozen = `${String(Math.floor(seconds / 60)).padStart(2,'0')}:${String(seconds % 60).padStart(2,'0')}`;
-  const clock = document.querySelector('#record-clock'); if (clock) clock.textContent = frozen;
-}, 500);
-async function initialize() {
+async function startSession(session: CaptureSession) {
+  sessionId = session.id;
+  if (!recording) dock.replaceChildren(bar, ocrPanel);
+  root.replaceChildren(canvas, border, recording ? bar : dock, hint, textInput);
+  try {
   setLocale(await invoke<string | null>('get_setting', { key: 'ui_language' }));
   if (!recording) {
     try {
@@ -376,12 +354,30 @@ async function initialize() {
       autoTranslate = preferences?.autoTranslate === true && aiEnabled;
     } catch { autoOcr = false; }
   }
+  if (sessionId !== session.id) return;
   textInput.placeholder = t('输入文字，Ctrl+Enter 确认');
-  hint.textContent = t("正在准备屏幕画面…");
-  const bytes = await invoke<ArrayBuffer>('read_capture_draft', {path}); image = await createImageBitmap(new Blob([bytes], {type:'image/png'}));
+  const bytes=await invoke<ArrayBuffer>('read_capture_draft',{path:session.path});
+  if (sessionId !== session.id) return;
+  const decoded = await createImageBitmap(new Blob([bytes],{type:'image/png'}));
+  if (sessionId !== session.id) { decoded.close(); return; }
+  image = decoded;
+  document.body.setAttribute('data-capture-active', '');
   canvas.width = image.width; canvas.height = image.height; renderBar(); paint();
+  if (sessionId !== session.id) return;
+  await invoke('capture_window_ready');
+  } catch (error) {
+    if (sessionId !== session.id) return;
+    console.error('Capture session failed', error);
+    await emit('capture-cancel');
+  }
 }
-void initialize().catch(error => { hint.textContent = t("打开截图失败：{0}，按 Esc 取消", [error]); });
+
+async function initialize() {
+  const path = new URLSearchParams(location.search).get('path');
+  if (!path) throw new Error('Missing system screenshot');
+  await startSession({id: path, path});
+}
+void initialize().catch(error => { console.error('Capture initialization failed', error); void emit('capture-cancel'); });
 window.addEventListener('beforeunload', () => { invalidateOcr(); ocrModule?.disposeOcr(); });
 window.addEventListener('storage', event => {
   if (event.key !== 'ui_language') return;

@@ -5,7 +5,7 @@ use std::{fs, io::Write, path::{Path, PathBuf}, sync::Mutex};
 use tauri::{AppHandle, Manager};
 
 static LOCK: Mutex<()> = Mutex::new(());
-const KEYS: &[&str] = &["ui_language", "pinned", "autostart", "feature_visibility", "capture_preferences", "capture_shortcuts", "ai_config_v2"];
+const KEYS: &[&str] = &["ui_language", "pinned", "autostart", "feature_order", "feature_visibility", "capture_preferences", "capture_shortcuts", "ai_config_v2"];
 pub fn is_file_setting(key: &str) -> bool { KEYS.contains(&key) }
 fn path(conn: &Connection) -> Option<PathBuf> {
     conn.path().filter(|p| !p.is_empty()).map(|p| Path::new(p).with_file_name("settings.json"))
@@ -13,7 +13,8 @@ fn path(conn: &Connection) -> Option<PathBuf> {
 fn defaults() -> Value {
     json!({
         "ui_language": "zh-CN", "pinned": false, "autostart": null,
-        "feature_visibility": {"aiChat":true,"todo":true,"note":true,"project":true,"app":true,"calculator":true,"screenshot":true,"recording":true},
+        "feature_order": {"groups":[],"children":{}},
+        "feature_visibility": {"aiChat":true,"todo":true,"note":true,"project":true,"app":true,"calculator":true,"screenshot":true,"recording":true,"reminder":true},
         "capture_preferences": {"screenshotDirectory":"","recordingDirectory":"","countdown":3,"fps":30,"cursor":true,"autoOcr":false,"autoTranslate":false},
         "capture_shortcuts": {"screenshot":"Ctrl+Alt+KeyA","recording":"Ctrl+Alt+KeyR"},
         "ai_config_v2": {"profiles":[],"activeId":""}
@@ -29,11 +30,28 @@ fn check(ok: bool, field: &str, reason: &str) -> Result<(), String> {
     if ok { Ok(()) } else { Err(format!("{field}：{reason}")) }
 }
 pub fn validate(value: &Value) -> Result<(), String> {
-    object(value, "settings", KEYS)?;
+    let mut normalized=value.clone();
+    if normalized.get("feature_order").is_none() { normalized["feature_order"]=json!({"groups":[],"children":{}}); }
+    object(&normalized, "settings", KEYS)?;
+    let order=&normalized["feature_order"];
+    object(order,"feature_order",&["groups","children"])?;
+    let groups=["ai","document","workbench","tools"];
+    let valid_list=|list:&Value,known:&[&str]| -> bool {
+        list.as_array().is_some_and(|items| items.iter().all(|id| id.as_str().is_some_and(|s|known.contains(&s))) && items.iter().filter_map(Value::as_str).collect::<std::collections::HashSet<_>>().len()==items.len())
+    };
+    check(valid_list(&order["groups"],&groups),"feature_order.groups","必须是无重复的栏目列表")?;
+    let children=order["children"].as_object().ok_or("feature_order.children：必须是 JSON 对象")?;
+    for (group,items) in children {
+        let ids:&[&str]=match group.as_str() { "ai"=>&["aiChat"],"document"=>&["todo","note"],"workbench"=>&["project","app"],"tools"=>&["screenshot","recording","calculator","reminder"],_=>return Err("feature_order.children：未知栏目".into()) };
+        check(valid_list(items,ids),&format!("feature_order.children.{group}"),"必须是所属栏目内无重复的功能列表")?;
+    }
     check(matches!(value["ui_language"].as_str(), Some("zh-CN" | "en" | "es")), "ui_language", "仅支持 zh-CN、en、es")?;
     check(value["pinned"].is_boolean(), "pinned", "必须是布尔值")?;
     check(value["autostart"].is_boolean() || value["autostart"].is_null(), "autostart", "必须是布尔值或 null（保留系统设置）")?;
-    let visibility = object(&value["feature_visibility"], "feature_visibility", &["aiChat","todo","note","project","app","calculator","screenshot","recording"])?;
+    let visibility=value["feature_visibility"].as_object().ok_or("feature_visibility：必须是 JSON 对象")?;
+    let mut legacy_visibility=value["feature_visibility"].clone();
+    if let Some(fields)=legacy_visibility.as_object_mut() { fields.remove("timer");fields.remove("reminder"); }
+    object(&legacy_visibility,"feature_visibility",&["aiChat","todo","note","project","app","calculator","screenshot","recording"])?;
     for (key, entry) in visibility { check(entry.is_boolean(), &format!("feature_visibility.{key}"), "必须是布尔值")?; }
     let p = &value["capture_preferences"];
     // Older settings remain valid; missing switches mean manual recognition/translation.
@@ -84,6 +102,19 @@ mod tests {
         let mut conn = Connection::open(dir.path().join("assistant.db")).unwrap();
         crate::initialize_schema(&mut conn).unwrap();
         (dir, conn)
+    }
+    #[test]
+    fn feature_order_is_optional_for_old_files_and_validated_for_new_files() {
+        let mut value=defaults();
+        value.as_object_mut().unwrap().remove("feature_order");
+        validate(&value).unwrap();
+        assert!(parse(&value.to_string()).unwrap()["feature_order"].is_object());
+        value["feature_order"]=json!({"groups":["tools","ai"],"children":{"tools":["reminder","calculator"]}});
+        validate(&value).unwrap();
+        value["feature_order"]["children"]["tools"]=json!(["note"]);
+        assert!(validate(&value).is_err());
+        value["feature_order"]=json!({"groups":["tools","tools"],"children":{}});
+        assert!(validate(&value).is_err());
     }
     #[test]
     fn migrates_settings_to_typed_json_and_keeps_business_data_in_database() {
@@ -191,7 +222,8 @@ mod tests {
     }
 }
 fn parse(content: &str) -> Result<Value, String> {
-    let value = serde_json::from_str(content.trim_start_matches('\u{feff}')).map_err(|e| format!("settings.json 第 {} 行，第 {} 列：{}", e.line(), e.column(), e))?;
+    let mut value: Value = serde_json::from_str(content.trim_start_matches('\u{feff}')).map_err(|e| format!("settings.json 第 {} 行，第 {} 列：{}", e.line(), e.column(), e))?;
+    if value.is_object() && value.get("feature_order").is_none() { value["feature_order"]=json!({"groups":[],"children":{}}); }
     validate(&value)?;
     Ok(value)
 }

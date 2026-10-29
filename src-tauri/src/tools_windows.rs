@@ -1,8 +1,8 @@
 use super::{CaptureRegion, DisplayInfo, RecordingStatus};
-use std::{path::{Path, PathBuf}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{path::PathBuf, time::{Duration, SystemTime, UNIX_EPOCH}};
 use windows_capture::{
     capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
-    encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, ImageFormat, VideoEncoder, VideoSettingsBuilder, VideoSettingsSubType},
+    encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder, VideoSettingsSubType},
     frame::Frame, graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl}, monitor::Monitor,
     settings::{ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings, MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings},
 };
@@ -16,10 +16,9 @@ pub fn displays() -> Result<Vec<DisplayInfo>, String> {
     })).collect()
 }
 
-pub struct CaptureFlags { path: PathBuf, screenshot: bool, width: u32, height: u32, region: Option<CaptureRegion>, fps: u32 }
+pub struct CaptureFlags { path: PathBuf, width: u32, height: u32, region: Option<CaptureRegion>, fps: u32 }
 pub struct Capture {
     encoder: Option<VideoEncoder>,
-    screenshot: Option<PathBuf>,
     frames: u64,
     region: Option<CaptureRegion>,
     fps: u32,
@@ -36,18 +35,14 @@ impl GraphicsCaptureApiHandler for Capture {
     type Error = CaptureError;
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
         let flags = ctx.flags;
-        let encoder = if flags.screenshot { None } else { Some(VideoEncoder::new(
+        let encoder = Some(VideoEncoder::new(
             VideoSettingsBuilder::new(flags.width, flags.height).sub_type(VideoSettingsSubType::H264).frame_rate(flags.fps).bitrate(8_000_000),
             AudioSettingsBuilder::default().disabled(true), ContainerSettingsBuilder::default(), &flags.path,
-        )?) };
-        Ok(Self { encoder, screenshot: flags.screenshot.then_some(flags.path), frames: 0, region: flags.region, fps: flags.fps, started: std::time::Instant::now(), paused: None, pause_time: Duration::ZERO, buffer: Vec::new(), bottom_up: Vec::new(), last_frame: std::time::Instant::now() })
+        )?);
+        Ok(Self { encoder, frames: 0, region: flags.region, fps: flags.fps, started: std::time::Instant::now(), paused: None, pause_time: Duration::ZERO, buffer: Vec::new(), bottom_up: Vec::new(), last_frame: std::time::Instant::now() })
     }
-    fn on_frame_arrived(&mut self, frame: &mut Frame, control: InternalCaptureControl) -> Result<(), Self::Error> {
-        if let Some(path) = self.screenshot.take() {
-            frame.save_as_image(path, ImageFormat::Png)?;
-            self.frames += 1;
-            control.stop();
-        } else if let Some(encoder) = &mut self.encoder {
+    fn on_frame_arrived(&mut self, frame: &mut Frame, _control: InternalCaptureControl) -> Result<(), Self::Error> {
+        if let Some(encoder) = &mut self.encoder {
             if self.paused.is_some() || (self.frames > 0 && self.last_frame.elapsed() < Duration::from_millis(1000 / self.fps as u64)) { return Ok(()); }
             let timestamp = self.started.elapsed().saturating_sub(self.pause_time).as_nanos() / 100;
             let pixels = if let Some(r) = self.region { frame.buffer_crop(r.x, r.y, r.x + r.width, r.y + r.height)? } else { frame.buffer()? };
@@ -63,14 +58,14 @@ impl GraphicsCaptureApiHandler for Capture {
     }
 }
 
-fn start(display_id: usize, path: PathBuf, screenshot: bool, region: Option<CaptureRegion>, fps: u32, show_cursor: bool) -> Result<CaptureControl<Capture, CaptureError>, String> {
+fn start(display_id: usize, path: PathBuf, region: Option<CaptureRegion>, fps: u32, show_cursor: bool) -> Result<CaptureControl<Capture, CaptureError>, String> {
     let monitor = Monitor::from_index(display_id).map_err(|e| e.to_string())?;
     let width = monitor.width().map_err(|e| e.to_string())?;
     let height = monitor.height().map_err(|e| e.to_string())?;
     let region = region.map(|r| r.checked(width, height)).transpose()?;
-    let flags = CaptureFlags { width: region.map_or(width, |r| r.width), height: region.map_or(height, |r| r.height), path, screenshot, region, fps };
+    let flags = CaptureFlags { width: region.map_or(width, |r| r.width), height: region.map_or(height, |r| r.height), path, region, fps };
     let cursor = if GraphicsCaptureApi::is_cursor_settings_supported().unwrap_or(false) {
-        if screenshot || !show_cursor { CursorCaptureSettings::WithoutCursor } else { CursorCaptureSettings::WithCursor }
+        if !show_cursor { CursorCaptureSettings::WithoutCursor } else { CursorCaptureSettings::WithCursor }
     } else { CursorCaptureSettings::Default };
     let interval = if GraphicsCaptureApi::is_minimum_update_interval_supported().unwrap_or(false) {
         MinimumUpdateIntervalSettings::Custom(Duration::from_millis(1000 / fps as u64))
@@ -82,15 +77,6 @@ fn start(display_id: usize, path: PathBuf, screenshot: bool, region: Option<Capt
     )).map_err(|e| e.to_string())
 }
 
-pub fn screenshot(display_id: usize, path: &Path) -> Result<(), String> {
-    let control = start(display_id, path.to_owned(), true, None, 30, false)?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
-    while !control.is_finished() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(25)); }
-    if !control.is_finished() { let _ = control.stop(); return Err("截图超时，请检查屏幕捕获权限".into()); }
-    control.wait().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 #[derive(Default)]
 pub struct RecordingState {
     control: Option<CaptureControl<Capture, CaptureError>>,
@@ -100,7 +86,7 @@ pub struct RecordingState {
 impl RecordingState {
     pub fn start(&mut self, display_id: usize, path: PathBuf, region: Option<CaptureRegion>, fps: u32, cursor: bool) -> Result<RecordingStatus, String> {
         if self.control.is_some() { return Err("已有录屏进行中，请先停止并保存".into()); }
-        let control = start(display_id, path.clone(), false, region, fps, cursor)?;
+        let control = start(display_id, path.clone(), region, fps, cursor)?;
         self.control = Some(control);
         self.status = RecordingStatus { active: true, started_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64, path: path.to_string_lossy().into(), error: None, paused: false };
         Ok(self.status())
@@ -137,10 +123,6 @@ impl RecordingState {
         if let Some(error) = &self.status.error { return Err(error.clone()); }
         Ok(self.status())
     }
-}
-
-pub fn device_name(display_id: usize) -> Result<String, String> {
-    Monitor::from_index(display_id).and_then(|m| m.device_name()).map_err(|e| e.to_string())
 }
 
 fn flip_rows(source: &[u8], stride: usize, output: &mut Vec<u8>) {

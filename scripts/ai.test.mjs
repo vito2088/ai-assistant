@@ -68,6 +68,21 @@ async function fixture({ config = {}, profiles, sessions = [session('s1')], hand
   return { ai, saved, calls, notices, flush, catalog };
 }
 
+test('AI page masks controls without a selected usable key and links directly to configuration', async () => {
+  const empty = await fixture({ profiles: [] });
+  assert.match(empty.ai.view(), /inert aria-hidden="true"/);
+  assert.match(empty.ai.view(), /data-action="ai-configure"/);
+  empty.ai.openConfiguration();
+  assert.match(empty.ai.settingsView(), /ai-api-key/);
+  const cloud = await fixture({ config: { baseUrl: 'https://example.org/v1', hasKey: false } });
+  assert.match(cloud.ai.view(), /ai-key-mask/);
+  cloud.catalog.profiles[0].hasKey = true;
+  await cloud.ai.reloadSettings();
+  assert.doesNotMatch(cloud.ai.view(), /ai-key-mask/);
+  const local = await fixture();
+  assert.doesNotMatch(local.ai.view(), /ai-key-mask/, 'configured local password-free services remain usable');
+});
+
 test('adding and testing a second model keeps active selection; switching preserves draft and uses selected profile', async () => {
   const f = await fixture();
   f.ai.input(input('保留草稿'));

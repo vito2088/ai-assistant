@@ -1,14 +1,11 @@
 use serde::{Serialize, Deserialize};
 use std::{collections::HashMap, fs::File, io::Write, path::PathBuf, sync::Mutex};
-use tauri::{ipc::{InvokeBody, Request, Response}, AppHandle, Emitter, Manager, State};
+use tauri::{ipc::{InvokeBody, Request}, AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 #[cfg(windows)]
 #[path = "tools_windows.rs"]
 mod native;
-
-#[cfg(windows)]
-pub fn display_device_name(id: usize) -> Result<String, String> { native::device_name(id) }
 
 #[tauri::command]
 pub fn pause_screen_recording(app: AppHandle, paused: bool) -> Result<RecordingStatus, String> {
@@ -77,19 +74,73 @@ pub async fn tool_displays() -> Result<Vec<DisplayInfo>, String> {
 #[tauri::command]
 pub fn native_capture_available() -> bool { cfg!(windows) }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeCaptureResult { pub action: String, pub capture_ms: u64, pub prepare_ms: u64, pub ready_ms: u64, pub path: Option<String> }
+
 #[tauri::command]
-pub async fn capture_screenshot(display_id: usize, path: String) -> Result<Response, String> {
-    let output = validate_output(&path, &["png"])?;
+pub fn start_native_capture(app: AppHandle, kind:String) -> Result<(),String> {
     #[cfg(windows)]
-    {
-        tauri::async_runtime::spawn_blocking(move || {
-            native::screenshot(display_id, &output)?;
-            std::fs::read(output).map(Response::new).map_err(|e| e.to_string())
-        }).await.map_err(|e| e.to_string())?
-    }
+    { super::native_capture_service::start(&app,super::native_capture_service::Kind::parse(&kind)?) }
     #[cfg(not(windows))]
-    { let _ = (display_id, output); Err("请使用系统屏幕选择器截图".into()) }
+    {let _=(app,kind);Err("当前平台使用系统捕获".into())}
 }
+
+#[tauri::command]
+pub fn configure_native_capture(app:AppHandle,display_id:usize,hide_helper:bool)->Result<(),String>{
+    #[cfg(windows)] {super::native_capture_service::configure(&app,display_id,hide_helper)}
+    #[cfg(not(windows))] {let _=(app,display_id,hide_helper);Ok(())}
+}
+#[tauri::command]
+pub fn native_capture_status(app:AppHandle)->Result<serde_json::Value,String>{
+    #[cfg(windows)] {serde_json::to_value(super::native_capture_service::status(&app)).map_err(|e|e.to_string())}
+    #[cfg(not(windows))] {let _=app;Ok(serde_json::json!({"active":false,"kind":null}))}
+}
+#[tauri::command]
+pub fn native_capture_runtime(app:AppHandle)->Result<serde_json::Value,String>{
+    #[cfg(windows)] {serde_json::to_value(super::native_capture_service::runtime(&app)?).map_err(|e|e.to_string())}
+    #[cfg(not(windows))] {let _=app;Ok(serde_json::json!({"displayId":0,"hideHelper":true}))}
+}
+#[tauri::command]
+pub fn sync_native_capture_shortcuts(app:AppHandle)->Result<(),String>{
+    #[cfg(windows)] {super::native_capture_service::sync_shortcuts(&app)}
+    #[cfg(not(windows))] {let _=app;Ok(())}
+}
+#[tauri::command]
+pub fn register_native_capture_shortcut(app:AppHandle,kind:String,key:String)->Result<(),String>{
+    #[cfg(windows)] {super::native_capture_service::register(&app,super::native_capture_service::Kind::parse(&kind)?,key)}
+    #[cfg(not(windows))] {let _=(app,kind,key);Err("当前平台使用系统快捷键".into())}
+}
+#[tauri::command]
+pub fn unregister_native_capture_shortcut(app:AppHandle,key:String)->Result<(),String>{
+    #[cfg(windows)] {super::native_capture_service::unregister(&app,&key)}
+    #[cfg(not(windows))] {let _=(app,key);Ok(())}
+}
+#[tauri::command]
+pub fn edit_native_capture_shortcut(app:AppHandle,kind:Option<String>)->Result<(),String>{
+    #[cfg(windows)] {super::native_capture_service::edit_shortcut(&app,kind.as_deref().map(super::native_capture_service::Kind::parse).transpose()?);Ok(())}
+    #[cfg(not(windows))] {let _=(app,kind);Ok(())}
+}
+#[tauri::command]
+pub fn control_native_capture(app:AppHandle,action:String)->Result<(),String>{
+    #[cfg(windows)] {use super::native_capture_service::{self,Message};let message=match action.as_str(){"cancel"=>Message::Cancel,"stop"=>Message::Stop,"pause"=>Message::Pause,_=>return Err("无效捕获操作".into())};native_capture_service::post(&app,message);Ok(())}
+    #[cfg(not(windows))] {let _=(app,action);Ok(())}
+}
+#[tauri::command]
+pub fn native_capture_ocr_result(app:AppHandle,result:serde_json::Value)->Result<(),String>{
+    #[cfg(windows)] {super::native_capture_service::ocr_result(&app,serde_json::from_value(result).map_err(|e|e.to_string())?)}
+    #[cfg(not(windows))] {let _=(app,result);Ok(())}
+}
+#[tauri::command]
+pub fn native_capture_pending_ocr(app:AppHandle)->Option<serde_json::Value>{
+    #[cfg(windows)] {super::native_capture_service::pending_ocr(&app)}
+    #[cfg(not(windows))] {let _=app;None}
+}
+pub fn recording_snapshot(app:&AppHandle)->Result<RecordingStatus,String>{
+    #[cfg(windows)] {Ok(app.state::<ToolState>().recording.lock().map_err(|e|e.to_string())?.status())}
+    #[cfg(not(windows))] {let _=app;Ok(RecordingStatus::default())}
+}
+pub fn recording_active(app:&AppHandle)->bool{recording_snapshot(app).is_ok_and(|s|s.active)}
 
 #[tauri::command]
 pub async fn start_screen_recording(app: AppHandle, display_id: usize, path: String, region: Option<CaptureRegion>, fps: Option<u32>, cursor: Option<bool>) -> Result<RecordingStatus, String> {

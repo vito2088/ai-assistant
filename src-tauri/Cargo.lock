@@ -2372,10 +2372,11 @@ dependencies = [
 
 [[package]]
 name = "my-assistant"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "keyring",
+ "png",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -2388,7 +2389,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "windows",
  "windows-capture",
+ "windows-numerics",
 ]
 
 [[package]]

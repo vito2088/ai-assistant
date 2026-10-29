@@ -1,14 +1,14 @@
 {
   "name": "my-assistant",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "predev": "node scripts/prepare-ocr.mjs",
     "prebuild": "node scripts/prepare-ocr.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "node --test scripts/calculator.test.mjs scripts/feature-visibility.test.mjs scripts/gitee-release.test.mjs scripts/capture-shortcuts.test.mjs scripts/capture-translation.test.mjs scripts/ai.test.mjs scripts/i18n.test.mjs",
+    "test": "node --test scripts/calculator.test.mjs scripts/feature-visibility.test.mjs scripts/gitee-release.test.mjs scripts/capture-shortcuts.test.mjs scripts/capture-translation.test.mjs scripts/native-capture.test.mjs scripts/ai.test.mjs scripts/i18n.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
