@@ -14,7 +14,7 @@ fn defaults() -> Value {
     json!({
         "ui_language": "zh-CN", "pinned": false, "autostart": null,
         "feature_order": {"groups":[],"children":{}},
-        "feature_visibility": {"aiChat":true,"todo":true,"note":true,"project":true,"app":true,"calculator":true,"screenshot":true,"recording":true,"reminder":true},
+        "feature_visibility": {"aiChat":true,"todo":true,"note":true,"project":true,"app":true,"terminalSessions":true,"calculator":true,"screenshot":true,"recording":true,"reminder":true},
         "capture_preferences": {"screenshotDirectory":"","recordingDirectory":"","countdown":3,"fps":30,"cursor":true,"autoOcr":false,"autoTranslate":false},
         "capture_shortcuts": {"screenshot":"Ctrl+Alt+KeyA","recording":"Ctrl+Alt+KeyR"},
         "ai_config_v2": {"profiles":[],"activeId":""}
@@ -35,14 +35,14 @@ pub fn validate(value: &Value) -> Result<(), String> {
     object(&normalized, "settings", KEYS)?;
     let order=&normalized["feature_order"];
     object(order,"feature_order",&["groups","children"])?;
-    let groups=["ai","document","workbench","tools"];
+    let groups=["ai","document","workbench","terminal","tools"];
     let valid_list=|list:&Value,known:&[&str]| -> bool {
         list.as_array().is_some_and(|items| items.iter().all(|id| id.as_str().is_some_and(|s|known.contains(&s))) && items.iter().filter_map(Value::as_str).collect::<std::collections::HashSet<_>>().len()==items.len())
     };
     check(valid_list(&order["groups"],&groups),"feature_order.groups","必须是无重复的栏目列表")?;
     let children=order["children"].as_object().ok_or("feature_order.children：必须是 JSON 对象")?;
     for (group,items) in children {
-        let ids:&[&str]=match group.as_str() { "ai"=>&["aiChat"],"document"=>&["todo","note"],"workbench"=>&["project","app"],"tools"=>&["screenshot","recording","calculator","reminder"],_=>return Err("feature_order.children：未知栏目".into()) };
+        let ids:&[&str]=match group.as_str() { "ai"=>&["aiChat"],"document"=>&["todo","note"],"workbench"=>&["project","app"],"terminal"=>&["terminalSessions"],"tools"=>&["screenshot","recording","calculator","reminder"],_=>return Err("feature_order.children：未知栏目".into()) };
         check(valid_list(items,ids),&format!("feature_order.children.{group}"),"必须是所属栏目内无重复的功能列表")?;
     }
     check(matches!(value["ui_language"].as_str(), Some("zh-CN" | "en" | "es")), "ui_language", "仅支持 zh-CN、en、es")?;
@@ -50,7 +50,7 @@ pub fn validate(value: &Value) -> Result<(), String> {
     check(value["autostart"].is_boolean() || value["autostart"].is_null(), "autostart", "必须是布尔值或 null（保留系统设置）")?;
     let visibility=value["feature_visibility"].as_object().ok_or("feature_visibility：必须是 JSON 对象")?;
     let mut legacy_visibility=value["feature_visibility"].clone();
-    if let Some(fields)=legacy_visibility.as_object_mut() { fields.remove("timer");fields.remove("reminder"); }
+    if let Some(fields)=legacy_visibility.as_object_mut() { fields.remove("timer");fields.remove("reminder");fields.remove("terminalSessions"); }
     object(&legacy_visibility,"feature_visibility",&["aiChat","todo","note","project","app","calculator","screenshot","recording"])?;
     for (key, entry) in visibility { check(entry.is_boolean(), &format!("feature_visibility.{key}"), "必须是布尔值")?; }
     let p = &value["capture_preferences"];
@@ -115,6 +115,10 @@ mod tests {
         assert!(validate(&value).is_err());
         value["feature_order"]=json!({"groups":["tools","tools"],"children":{}});
         assert!(validate(&value).is_err());
+    }
+    #[test]
+    fn terminal_visibility_and_order_accept_both_old_and_new_settings(){
+        let mut value=defaults();value["feature_order"]=json!({"groups":["terminal","ai"],"children":{"terminal":["terminalSessions"]}});value["feature_visibility"]["terminalSessions"]=json!(false);validate(&value).unwrap();value["feature_visibility"].as_object_mut().unwrap().remove("terminalSessions");validate(&value).unwrap();value["feature_visibility"]["terminalSessions"]=json!("false");assert!(validate(&value).is_err());
     }
     #[test]
     fn migrates_settings_to_typed_json_and_keeps_business_data_in_database() {

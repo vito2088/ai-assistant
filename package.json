@@ -8,7 +8,8 @@
     "prebuild": "node scripts/prepare-ocr.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "node --test scripts/calculator.test.mjs scripts/feature-visibility.test.mjs scripts/gitee-release.test.mjs scripts/capture-shortcuts.test.mjs scripts/capture-translation.test.mjs scripts/native-capture.test.mjs scripts/ai.test.mjs scripts/i18n.test.mjs",
+    "icons": "tauri icon src-tauri/icons/app-icon.svg",
+    "test": "node --test scripts/app-dialog.test.mjs scripts/calculator.test.mjs scripts/feature-visibility.test.mjs scripts/release-assets.test.mjs scripts/capture-shortcuts.test.mjs scripts/capture-translation.test.mjs scripts/native-capture.test.mjs scripts/ai.test.mjs scripts/ai-workspace.test.mjs scripts/terminal.test.mjs scripts/i18n.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -16,12 +17,15 @@
     "@tauri-apps/plugin-autostart": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-global-shortcut": "^2.4.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@tesseract.js-data/chi_sim": "^1.0.0",
     "@tesseract.js-data/eng": "^1.0.0",
+    "linkedom": "0.18.12",
     "typescript": "^5.6.0",
     "vite": "^5.4.0"
   }

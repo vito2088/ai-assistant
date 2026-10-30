@@ -6,9 +6,6 @@ on:
       GITEE_TOKEN:
         required: true
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/repository-default-branch.yml]
 
 permissions:
   contents: read

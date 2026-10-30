@@ -1,21 +1,38 @@
 import { t as tr, h, languages, getLocale, setLocale } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
+import { currentMonitor, primaryMonitor, getCurrentWindow, LogicalSize, PhysicalPosition } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { confirm as confirmDialog, keepConfirmationOnTop } from './app-dialog';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
 import './style.css';
+import './sidebar.css';
 import { Tools } from './tools';
 import { Ai } from './ai';
+import { TerminalWorkspace } from './terminal';
 import { openSettingsEditor, type SettingsDocument } from './settings-editor';
 import { parseFeatureOrder, orderedGroups, moveFeature, type FeatureOrder } from './feature-order';
 import { featureGroups, parseVisibility, groupState, setFeatureVisible } from './feature-visibility';
 
 type Mode = 'expanded' | 'icon' | 'compact';
-type Page = 'document' | 'workbench' | 'tools' | 'ai' | 'settings';
+type Page = 'document' | 'workbench' | 'terminal' | 'tools' | 'ai' | 'settings';
 type DocumentSection = 'todo' | 'note';
 type Kind = 'project' | 'app';
 type Platform = 'windows' | 'macos' | 'linux';
+type SettingsSection = 'general' | 'features' | 'screenshot' | 'recording' | 'shortcuts' | 'ai' | 'terminal' | 'advanced' | 'about';
+const settingsSections: { id: SettingsSection; label: string }[] = [
+  { id: 'general', label: '常规设置' }, { id: 'features', label: '功能显示' },
+  { id: 'screenshot', label: '截图设置' }, { id: 'recording', label: '录屏设置' },
+  { id: 'shortcuts', label: '快捷键' }, { id: 'ai', label: 'AI 模型' },
+  { id: 'terminal', label: '终端设置' },
+  { id: 'advanced', label: '高级设置' }, { id: 'about', label: '关于' },
+];
+let settingsSection: SettingsSection = 'general';
+try {
+  const saved = localStorage.getItem('settings_section');
+  if (settingsSections.some(section => section.id === saved)) settingsSection = saved as SettingsSection;
+} catch { /* Default to general settings. */ }
 type Todo = { id: number; text: string; completed: boolean; createdAt: number };
 type NoteItem = { id: number; content: string; createdAt: number; updatedAt: number };
 type Computer = { id: string; name: string; platform: Platform; isCurrent: boolean };
@@ -25,6 +42,9 @@ type ComputerDraft = { id?: string; name: string; platform: Platform };
 
 const windowRef = getCurrentWindow();
 const app = document.querySelector<HTMLDivElement>('#app')!;
+const appView = document.createElement('div');
+appView.className = 'app-view';
+app.append(appView);
 let visibility = parseVisibility(null);
 let featureOrder = parseFeatureOrder(null);
 let savingFeatureOrder = false;
@@ -40,6 +60,7 @@ let selectedComputerId = '';
 let computerDraft: ComputerDraft | null = null;
 let pinned = false;
 let autostart = false;
+let appVersion = '';
 let todos: Todo[] = [];
 let todoRevision = 0;
 let notes: NoteItem[] = [];
@@ -61,8 +82,24 @@ let savingLanguage = false;
 let settingsFile: SettingsDocument | null = null;
 let settingsRevision = '';
 let reloadingSettings = false;
+let resettingSettings = false;
+let applyingMode = false;
+let resizeTimer: number | undefined;
+const defaultExpandedSize = [880, 620] as const;
+let expandedSize: number[] = [...defaultExpandedSize];
+try {
+  const saved = JSON.parse(localStorage.getItem('expanded_window_size') ?? 'null');
+  if (Array.isArray(saved) && saved.length === 2 && saved.every(n => Number.isFinite(n) && n >= 360 && n <= 10000)) {
+    const wasDefaultSize = saved[0] === 800 && saved[1] === 560;
+    expandedSize = wasDefaultSize ? [...defaultExpandedSize] : saved;
+    if (wasDefaultSize) localStorage.setItem('expanded_window_size', JSON.stringify(expandedSize));
+  }
+} catch { /* Use the default size if the local preference is unavailable. */ }
 let settingsDeferred = false;
 let draft: Draft | null = null;
+let dialogDraft: Draft | null = null;
+let entryError = '';
+let pickingEntry = false;
 let notice = '';
 let noticeTimer: number | undefined;
 let positionTimer: number | undefined;
@@ -74,6 +111,7 @@ const tools = new Tools(() => {
   else app.querySelectorAll<HTMLElement>('.tools-recording-dot').forEach(dot => { dot.hidden = !tools.recording; });
 }, toast, path => visibility.aiChat ? ai.screenshotView(path) : '');
 const ai = new Ai(() => { if (mode === 'expanded') render(); }, toast, () => { page = 'ai'; render(); void saveSetting('page', page); }, () => notes, refresh);
+const terminal = new TerminalWorkspace(toast, () => { rememberSettingsSection('terminal'); page = 'settings'; render(); void saveSetting('page',page); }, () => { rememberSettingsSection('ai'); page = 'settings'; render(); void saveSetting('page',page); }, () => { if(mode==='expanded'&&page==='settings'&&settingsSection==='terminal')render(); });
 
 const esc = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const errorText = (error: unknown) => typeof error === 'string' ? error : error instanceof Error ? error.message : String(error);
@@ -133,8 +171,25 @@ async function applyMode(next: Mode, persist = true) {
   if (next === 'compact' && !visibility.todo) next = 'expanded';
   if (next !== 'compact') compactTodoOpen = false;
   mode = next;
-  const size = next === 'expanded' ? [430, 620] : next === 'compact' ? [360, 360] : [184, 184];
-  await windowRef.setSize(new LogicalSize(size[0], size[1]));
+  applyingMode = true;
+  clearTimeout(resizeTimer);
+  const size = next === 'expanded' ? [...expandedSize] : next === 'compact' ? [360, 360] : [184, 184];
+  let minWidth = 520, minHeight = 420;
+  if (next === 'expanded') {
+    const monitor = await currentMonitor().catch(() => null);
+    if (monitor) {
+      size[0] = Math.min(size[0], Math.max(360, Math.floor(monitor.workArea.size.width / monitor.scaleFactor) - 24));
+      size[1] = Math.min(size[1], Math.max(360, Math.floor(monitor.workArea.size.height / monitor.scaleFactor) - 24));
+      minWidth = Math.min(minWidth, size[0]);
+      minHeight = Math.min(minHeight, size[1]);
+    }
+  }
+  try {
+    await windowRef.setResizable(false);
+    await windowRef.setMinSize(next === 'expanded' ? new LogicalSize(minWidth, minHeight) : new LogicalSize(70, 70));
+    await windowRef.setSize(new LogicalSize(Math.max(next === 'expanded' ? minWidth : 70, size[0]), Math.max(next === 'expanded' ? minHeight : 70, size[1])));
+    await windowRef.setResizable(next === 'expanded');
+  } finally { applyingMode = false; }
   if (persist) await saveSetting('mode', next);
   render();
 }
@@ -208,7 +263,7 @@ function documentPage() {
 function workbenchPage() {
   const selected = computers.find(c => c.id === selectedComputerId);
   const platformName = (platform: Platform) => ({ windows: 'Windows', macos: 'macOS', linux: 'Linux' })[platform];
-  return `<div class="workbench-page ${draft ? 'editing-entry' : ''}">
+  return `<div class="workbench-page">
     <div class="computer-switcher"><div class="computer-list" aria-label="${h("电脑列表")}">${computers.map(c => `<button class="computer-chip ${c.id === selectedComputerId ? 'selected' : ''}" data-action="select-computer" data-computer-id="${esc(c.id)}" aria-pressed="${c.id === selectedComputerId}" title="${esc(c.name)} · ${platformName(c.platform)}"><strong>${esc(c.name)}</strong><span>${c.isCurrent ? tr("本机") : tr("待绑定")}</span></button>`).join('')}</div><button class="computer-add" data-action="new-computer" title="${h("添加电脑")}" aria-label="${h("添加电脑")}">${svgIcon('add')}</button></div>
     ${computerDraft ? `<form id="computer-form" class="computer-form ${computerDraft.id ? 'is-rename' : ''}"><div class="form-title"><strong>${computerDraft.id ? tr("电脑改名") : tr("添加电脑档案")}</strong><button type="button" class="text-button" data-action="cancel-computer">${h("取消")}</button></div>
       <input id="computer-name" aria-label="${h("电脑名称")}" maxlength="80" required placeholder="${h("例如：家用电脑")}" value="${esc(computerDraft.name)}" />
@@ -224,7 +279,6 @@ function entryPage(kind: Kind) {
   const items = (kind === 'project' ? projects : apps).filter(x => `${x.name} ${x.target}`.toLowerCase().includes(search.toLowerCase()));
   const title = kind === 'project' ? tr("项目") : tr("应用");
   return `<section class="page-body workbench-entries">
-    ${draft?.kind === kind ? entryForm() : ''}
     <input class="search" id="entry-search" placeholder="${h("搜索{0}…", [title])}" value="${esc(search)}" />
     <div class="list scroll-area">${items.length ? items.map(item => `<div class="entry-item"><div class="entry-row">
       <div class="entry-icon">${kind === 'project' ? '⌘' : '◈'}</div>
@@ -238,12 +292,46 @@ function entryPage(kind: Kind) {
 function entryForm() {
   if (!draft) return '';
   return `<form id="entry-form" class="entry-form">
-    <div class="form-title"><strong>${h(draft.id ? "编辑{0}" : "添加{0}", [draft.kind === 'project' ? tr("项目") : tr("应用")])}</strong><button type="button" class="text-button" data-action="cancel-entry">${h("取消")}</button></div>
-    <label>${h("名称")}<input id="draft-name" value="${esc(draft.name)}" maxlength="100" required placeholder="${h("输入显示名称")}" /></label>
+    <label>${h("名称")}<input id="draft-name" value="${esc(draft.name)}" maxlength="100" required autofocus placeholder="${h("输入显示名称")}" /></label>
     <label>${draft.kind === 'project' ? tr("项目文件夹") : tr("应用入口")}<div class="path-field"><input id="draft-target" value="${esc(draft.target)}" required placeholder="${draft.kind === 'project' ? tr("选择项目文件夹") : tr("选择程序文件或应用")}" /><button type="button" data-action="pick-target">${h("浏览")}</button></div></label>
     ${draft.kind === 'project' ? `<label>${h("编辑器")}<div class="path-field"><input id="draft-editor" value="${esc(draft.editor)}" required placeholder="${h("选择编辑器程序")}" /><button type="button" data-action="pick-editor">${h("浏览")}</button></div></label>` : ''}
-    <div class="form-actions">${draft.id ? `<button type="button" class="danger-link" data-action="delete-entry">${h("移除入口")}</button>` : '<span></span>'}<button type="submit" class="primary small">${h("保存")}</button></div>
+    <p class="form-error entry-error" role="alert" hidden></p>
+    <div class="form-actions">${draft.id ? `<button type="button" class="danger-link" data-action="delete-entry">${h("移除入口")}</button>` : '<span></span>'}<div class="entry-save-actions"><button type="button" class="text-button" data-action="cancel-entry">${h("取消")}</button><button type="submit" class="primary small">${h("保存")}</button></div></div>
   </form>`;
+}
+
+function syncEntryDialog() {
+  let dialog = app.querySelector<HTMLDialogElement>('.entry-dialog');
+  if (!draft || mode !== 'expanded' || page !== 'workbench') {
+    dialog?.close(); dialog?.remove(); dialogDraft = null;
+    return;
+  }
+  if (!dialog || dialogDraft !== draft) {
+    dialog?.close(); dialog?.remove();
+    dialog = document.createElement('dialog');
+    dialog.className = 'entry-dialog';
+    dialog.setAttribute('aria-labelledby', 'entry-dialog-title');
+    dialog.innerHTML = `<header class="entry-dialog-header"><strong id="entry-dialog-title">${h(draft.id ? '编辑{0}' : '添加{0}', [draft.kind === 'project' ? tr('项目') : tr('应用')])}</strong><button type="button" class="icon-button" data-action="cancel-entry" title="${h('关闭')}" aria-label="${h('关闭')}">${svgIcon('close')}</button></header>${entryForm()}`;
+    app.append(dialog);
+    dialogDraft = draft;
+    dialog.showModal();
+  }
+  for (const [field, value] of [['name', draft.name], ['target', draft.target], ['editor', draft.editor]]) {
+    const input = dialog.querySelector<HTMLInputElement>(`#draft-${field}`);
+    if (input && input.value !== value) input.value = value;
+  }
+  dialog.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(control => { control.disabled = savingEntry || pickingEntry; });
+  dialog.querySelector<HTMLButtonElement>('button[type=submit]')!.textContent = savingEntry ? tr('保存中…') : tr('保存');
+  const error = dialog.querySelector<HTMLElement>('.entry-error')!;
+  error.textContent = entryError;
+  error.hidden = !entryError;
+}
+
+function closeEntryDialog() {
+  if (savingEntry || pickingEntry) return;
+  const kind = draft?.kind;
+  draft = null; entryError = ''; render();
+  if (kind) app.querySelector<HTMLButtonElement>(`[data-action="new-entry"][data-kind="${kind}"]`)?.focus();
 }
 
 function featureSettings() {
@@ -256,24 +344,69 @@ function featureSettings() {
     }).join('')}</ul><p class="feature-settings-note">${h('设置始终显示，可随时恢复隐藏的功能。')}</p></div>`;
 }
 
-function settingsPage() {
-  return `<section class="page-body settings-page">
-    <div class="settings-card json-settings-card"><div><strong>${h('设置文件（JSON）')}</strong><p>${h('可直接编辑 settings.json，修正后重新加载即可生效。')}</p>${settingsFile ? `<p class="json-path">${esc(settingsFile.path)}</p>` : ''}</div>${settingsFile?.error ? `<div class="json-file-error" role="alert"><strong>${h('配置文件有误，当前使用默认配置')}</strong><p>${esc(settingsFile.error)}</p><p>${h('原文件已保留，修正后重新加载。')}</p></div>` : ''}${settingsDeferred ? `<p>${h('部分设置将在当前任务结束后重新加载时生效')}</p>` : ''}<div class="json-settings-actions"><button data-action="edit-settings-json">${h('编辑 JSON')}</button><button data-action="open-settings-external">${h('外部编辑器打开')}</button><button data-action="reveal-settings-json">${h('打开文件夹')}</button><button data-action="reload-settings-json" ${reloadingSettings ? 'disabled' : ''}>${h('重新加载')}</button></div></div>
-    <div class="settings-card language-settings"><div><strong>${h('界面语言')}</strong><p>${h('选择后立即生效，下次启动会保留')}</p></div><select id="ui-language" aria-label="${h('界面语言')}" ${savingLanguage ? 'disabled' : ''}>${languages.map(language => `<option value="${language.id}" ${language.id === getLocale() ? 'selected' : ''}>${language.name}</option>`).join('')}</select></div>
-    <div class="settings-card"><div><strong>${h("开机启动")}</strong><p>${h("登录系统后自动打开小助手")}</p></div><label class="switch"><input type="checkbox" id="autostart-toggle" ${autostart ? 'checked' : ''} ${updatingAutostart ? 'disabled' : ''} /><span></span></label></div>
-    <div class="settings-card"><div><strong>${h("固定并置顶")}</strong><p>${h("锁定位置，显示在普通窗口上方")}</p></div><label class="switch"><input type="checkbox" id="pin-toggle" ${pinned ? 'checked' : ''} /><span></span></label></div>
-    ${featureSettings()}
-    ${tools.shortcutSettingsView()}
-    ${tools.settingsView()}
-    ${ai.settingsView()}
-    <div class="settings-note">${h("数据保存在本机。最小化后可点击任务栏图标恢复，也可通过系统托盘显示或退出应用。")}</div>
+function aboutSettings() {
+  return `<section class="settings-card about-settings" aria-labelledby="about-title">
+    <strong id="about-title">${h('关于')}</strong>
+    <div class="about-brand"><span class="brand-mark" aria-hidden="true">${svgIcon('sparkle')}</span><div><strong>${h('小助手')}</strong><p>${h('记录待办与速记，管理项目和应用，随手截图、录屏与设置提醒。')}</p></div></div>
+    <dl class="about-details">
+      <div><dt>${h('版本号')}</dt><dd>${appVersion ? `v${esc(appVersion)}` : h('暂不可用')}</dd></div>
+      <div><dt>${h('开源许可')}</dt><dd>AGPL-3.0</dd></div>
+      <div><dt>${h('项目仓库')}</dt><dd><a class="about-repository" href="https://github.com/vito2088/ai-assistant" data-action="open-project-repository" title="GitHub · Star">vito2088/ai-assistant <span aria-hidden="true">↗</span></a></dd></div>
+    </dl>
   </section>`;
 }
 
+function settingsSectionContent() {
+  switch (settingsSection) {
+    case 'general': return `<div class="settings-card language-settings"><div><strong>${h('界面语言')}</strong><p>${h('选择后立即生效，下次启动会保留')}</p></div><select id="ui-language" aria-label="${h('界面语言')}" ${savingLanguage ? 'disabled' : ''}>${languages.map(language => `<option value="${language.id}" ${language.id === getLocale() ? 'selected' : ''}>${language.name}</option>`).join('')}</select></div>
+    <div class="settings-card"><div><strong>${h("开机启动")}</strong><p>${h("登录系统后自动打开小助手")}</p></div><label class="switch"><input type="checkbox" id="autostart-toggle" ${autostart ? 'checked' : ''} ${updatingAutostart ? 'disabled' : ''} /><span></span></label></div>
+    <div class="settings-card"><div><strong>${h("固定并置顶")}</strong><p>${h("锁定位置，显示在普通窗口上方")}</p></div><label class="switch"><input type="checkbox" id="pin-toggle" ${pinned ? 'checked' : ''} /><span></span></label></div>
+    <div class="settings-note">${h("数据保存在本机。最小化后可点击任务栏图标恢复，也可通过系统托盘显示或退出应用。")}</div>`;
+    case 'features': return featureSettings();
+    case 'screenshot': case 'recording': return tools.settingsView(settingsSection);
+    case 'shortcuts': return tools.shortcutSettingsView();
+    case 'ai': return ai.settingsView();
+    case 'terminal': return terminal.settingsView();
+    case 'advanced': return `<div class="settings-card json-settings-card"><div><strong>${h('设置文件（JSON）')}</strong><p>${h('可直接编辑 settings.json，修正后重新加载即可生效。')}</p>${settingsFile ? `<p class="json-path">${esc(settingsFile.path)}</p>` : ''}</div><div class="json-settings-actions"><button data-action="edit-settings-json">${h('编辑 JSON')}</button><button data-action="open-settings-external">${h('外部编辑器打开')}</button><button data-action="reveal-settings-json">${h('打开文件夹')}</button><button data-action="reload-settings-json" ${reloadingSettings ? 'disabled' : ''}>${h('重新加载')}</button></div></div>
+    <div class="settings-card reset-settings"><div><strong>${h('恢复默认设置')}</strong><p>${h('恢复窗口、语言、功能显示和截图录屏偏好，保留业务数据与 AI 配置。')}</p></div><button type="button" class="open-button" data-action="reset-settings" ${resettingSettings ? 'disabled' : ''}>${h('恢复默认')}</button></div>`;
+    case 'about': return aboutSettings();
+  }
+}
+
+function settingsPage() {
+  return `<div class="settings-layout"><nav class="settings-nav" aria-label="${h('设置分类')}">${settingsSections.map(section => `<button type="button" id="settings-nav-${section.id}" class="settings-nav-button ${settingsSection === section.id ? 'selected' : ''}" data-action="settings-section" data-section="${section.id}" aria-controls="settings-panel" ${settingsSection === section.id ? 'aria-current="page"' : ''}>${h(section.label)}</button>`).join('')}</nav>
+    <section class="page-body settings-page" id="settings-panel" aria-labelledby="settings-nav-${settingsSection}">
+      ${settingsFile?.error ? `<div class="settings-file-notice" role="alert"><strong>${h('配置文件有误，当前使用默认配置')}</strong><p>${esc(settingsFile.error)}</p><p>${h('原文件已保留，修正后重新加载。')}</p><div class="json-settings-actions"><button data-action="edit-settings-json">${h('编辑 JSON')}</button><button data-action="reload-settings-json" ${reloadingSettings ? 'disabled' : ''}>${h('重新加载')}</button></div></div>` : ''}
+      ${settingsDeferred ? `<p class="settings-note" role="status">${h('部分设置将在当前任务结束后重新加载时生效')}</p>` : ''}
+      ${settingsSectionContent()}
+    </section></div>`;
+}
+
+function rememberSettingsSection(section: string) {
+  if (!settingsSections.some(item => item.id === section)) return false;
+  settingsSection = section as SettingsSection;
+  try { localStorage.setItem('settings_section', settingsSection); } catch { /* Keep navigation usable without local storage. */ }
+  return true;
+}
+
 function expanded() {
-  return `<div class="shell expanded-shell">${topBar()}<nav class="tabs" style="grid-template-columns:repeat(${orderedPages().length},minmax(0,1fr))">
-    ${orderedPages().map(p => `<button class="tab ${page === p ? 'selected' : ''}" data-action="page" data-page="${p}">${({ document: tr("文档"), workbench: tr("工作台"), tools: tr("工具"), ai: 'AI', settings: tr("设置") } as Record<Page, string>)[p]}${p === 'tools' ? `<span class="tools-recording-dot recording-dot" ${tools.recording ? '' : 'hidden'} aria-label="${h("正在录屏")}"></span>` : ''}</button>`).join('')}
-  </nav>${page === 'document' ? documentPage() : page === 'workbench' ? workbenchPage() : page === 'tools' ? tools.view() : page === 'ai' ? ai.view() : settingsPage()}<footer class="footer"><span>DESKTOP ASSISTANT</span><span>v0.1</span></footer></div>`;
+  return `<div class="shell expanded-shell">${topBar()}<div class="workspace-layout">
+    <nav class="sidebar" aria-label="${h('主导航')}"><div class="sidebar-pages">${orderedPages().filter(p => p !== 'settings').map(sidebarButton).join('')}</div><div class="sidebar-bottom">${sidebarButton('settings')}</div></nav>
+    <main class="main-content">${page === 'document' ? documentPage() : page === 'workbench' ? workbenchPage() : page === 'terminal' ? terminal.view() : page === 'tools' ? tools.view() : page === 'ai' ? ai.view() : settingsPage()}</main>
+  </div></div>${(['North', 'South', 'East', 'West', 'NorthWest', 'NorthEast', 'SouthWest', 'SouthEast'] as const).map(direction => `<div class="window-resize-handle resize-${direction}" data-resize="${direction}" aria-hidden="true"></div>`).join('')}`;
+}
+
+function sidebarButton(p: Page) {
+  const labels: Record<Page, string> = { document: tr('文档'), workbench: tr('工作台'), terminal: tr('终端'), tools: tr('工具'), ai: 'AI', settings: tr('设置') };
+  const icons: Record<Page, string> = {
+    document: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
+    workbench: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    terminal: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/>',
+    tools: '<rect x="3" y="7" width="18" height="14" rx="3"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18M10 12v3h4v-3"/>',
+    ai: '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/>',
+    settings: '<path d="M4 6h5m4 0h7M4 12h9m4 0h3M4 18h2m4 0h10"/><circle cx="11" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="18" r="2"/>',
+  };
+  return `<button type="button" class="sidebar-button ${page === p ? 'selected' : ''}" data-action="page" data-page="${p}" title="${esc(labels[p])}" ${page === p ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[p]}</svg><span class="sidebar-label">${esc(labels[p])}</span>${p === 'tools' ? `<span class="tools-recording-dot recording-dot" ${tools.recording ? '' : 'hidden'} aria-label="${h('正在录屏')}"></span>` : ''}</button>`;
 }
 
 function iconView() {
@@ -300,10 +433,13 @@ function normalizeNavigation() {
   if (page !== 'settings' && !groupState(visibility,page).visible) page = orderedFeatures().find(group=>groupState(visibility,group.id).visible)?.id ?? 'settings';
   if (!visibility[documentSection]) documentSection = visibility.todo ? 'todo' : 'note';
   if (!visibility[workbenchSection]) workbenchSection = visibility.project ? 'project' : 'app';
+  terminal.setAiVisible(visibility.aiChat);
   tools.setVisibleSections(orderedFeatures().find(group => group.id === 'tools')!.children.filter(child => visibility[child.id]).map(child => child.id));
 }
 
 const scrollPositions = new Map<string, { top: number; bottom: boolean }>();
+const settingsScrollPositions = new Map<SettingsSection, number>();
+let renderedSettingsSection = settingsSection;
 let renderedPage: Page = page;
 function render() {
   normalizeNavigation();
@@ -313,12 +449,19 @@ function render() {
   renderedPage = page;
   const active = document.activeElement;
   const focus = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ? { id: active.id, start: active.selectionStart, end: active.selectionEnd } : null;
-  const settingsScroll = app.querySelector('.settings-page')?.scrollTop ?? 0;
+  const oldSettingsBody = app.querySelector('.settings-page');
+  if (oldSettingsBody) settingsScrollPositions.set(renderedSettingsSection, oldSettingsBody.scrollTop);
+  const settingsScroll = settingsScrollPositions.get(settingsSection) ?? 0;
+  const settingsNavScroll = app.querySelector('.settings-nav')?.scrollTop ?? 0;
+  renderedSettingsSection = settingsSection;
   const focusedFeature = document.activeElement instanceof HTMLInputElement ? document.activeElement.dataset.feature : undefined;
-  app.innerHTML = (mode === 'expanded' ? expanded() : mode === 'compact' ? compactView() : iconView()) + (notice ? `<div class="toast" role="status">${esc(notice)}</div>` : '');
+  app.querySelectorAll('.toast').forEach(element => element.remove());
+  terminal.beforeRender();
+  appView.innerHTML = (mode === 'expanded' ? expanded() : mode === 'compact' ? compactView() : iconView()) + (notice ? `<div class="toast" role="status">${esc(notice)}</div>` : '');
+  syncEntryDialog();
   if (page === 'settings' && settingsFile?.error) {
     app.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('.settings-page input,.settings-page button,.settings-page select,.settings-page textarea').forEach(control => {
-      if (!control.closest('.json-settings-card')) control.disabled = true;
+      if (!control.closest('.json-settings-card,.settings-file-notice')) control.disabled = true;
     });
   }
   ai.restoreEditor();
@@ -340,10 +483,14 @@ function render() {
   }
   const settingsBody = app.querySelector('.settings-page');
   if (settingsBody) settingsBody.scrollTop = settingsScroll;
+  const settingsNav = app.querySelector('.settings-nav');
+  if (settingsNav) settingsNav.scrollTop = settingsNavScroll;
   if (focusedFeature) app.querySelector<HTMLInputElement>(`[data-feature="${focusedFeature}"]`)?.focus({ preventScroll: true });
   tools.afterRender();
+  terminal.afterRender();
   const dialog = app.querySelector<HTMLDialogElement>('.compact-todo-dialog');
   if (dialog) { dialog.showModal(); dialog.querySelector<HTMLInputElement>('input')?.focus(); }
+  keepConfirmationOnTop();
 }
 
 function closeCompactTodo() {
@@ -385,9 +532,45 @@ function toggleEntryMenu(button: HTMLElement) {
 }
 
 async function runAction(action: string, button: HTMLElement) {
+  if (action === 'settings-section') {
+    if (!rememberSettingsSection(button.dataset.section ?? '')) return;
+    render();
+    const selected = app.querySelector<HTMLButtonElement>(`#settings-nav-${settingsSection}`);
+    selected?.focus({ preventScroll: true });
+    selected?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (action === 'reset-settings') {
+    if (resettingSettings) return;
+    resettingSettings = true;
+    render();
+    try {
+      if (!await confirmDialog(tr('恢复窗口大小、语言、功能顺序、置顶、开机启动、快捷键及截图录屏偏好？待办、速记、项目、应用、提醒、历史记录及 AI 配置会保留。'), { title: tr('恢复默认设置'), kind: 'warning', okLabel: tr('恢复默认') })) return;
+      const file = await invoke<SettingsDocument>('read_settings_file');
+      const current = JSON.parse(file.content);
+      const defaults = JSON.parse(file.defaults);
+      defaults.ai_config_v2 = current.ai_config_v2;
+      defaults.autostart = false;
+      await invoke('save_settings_json', { content: JSON.stringify(defaults, null, 2), expected: file.content });
+      expandedSize = [...defaultExpandedSize];
+      localStorage.removeItem('expanded_window_size');
+      rememberSettingsSection('general');
+      settingsScrollPositions.clear();
+      await reloadFileSettings();
+      await applyMode('expanded');
+      await centerMainWindow();
+      toast(tr('已恢复默认设置'));
+    } finally { resettingSettings = false; render(); }
+    return;
+  }
+  if (action === 'open-project-repository') {
+    await invoke('open_project_repository');
+    return;
+  }
   if (action === 'capture-settings') {
     const kind = button.dataset.kind;
     if (kind !== 'screenshot' && kind !== 'recording') return;
+    rememberSettingsSection(kind);
     page = 'settings'; render();
     await saveSetting('page', page);
     await reloadFileSettings();
@@ -399,7 +582,14 @@ async function runAction(action: string, button: HTMLElement) {
     }
     return;
   }
+  if (action === 'ai-model-settings') {
+    if (!ai.prepareModelSettings()) return;
+    rememberSettingsSection('ai');
+    page = 'settings'; render();
+    await saveSetting('page', page); return;
+  }
   if (action === 'ai-configure') {
+    rememberSettingsSection('ai');
     page='settings'; render(); ai.openConfiguration(); render();
     await saveSetting('page',page); return;
   }
@@ -412,25 +602,25 @@ async function runAction(action: string, button: HTMLElement) {
     case 'reveal-settings-json': await invoke('read_settings_file'); await invoke('reveal_settings_file'); break;
     case 'reload-settings-json': await reloadFileSettings(); break;
     case 'page':
-      if (draft && (draft.name || draft.target || draft.editor) && !confirm(tr("当前项目或应用尚未保存，确定离开吗？"))) break;
-      if (computerDraft?.name && !confirm(tr("电脑档案尚未保存，确定离开吗？"))) break;
+      if (draft && (draft.name || draft.target || draft.editor) && !await confirmDialog(tr("当前项目或应用尚未保存，确定离开吗？"))) break;
+      if (computerDraft?.name && !await confirmDialog(tr("电脑档案尚未保存，确定离开吗？"))) break;
       page = button.dataset.page as Page; if (page === 'tools') tools.showHome(); search = ''; draft = null; computerDraft = null; await saveSetting('page', page); render(); if (page === 'settings') await reloadFileSettings(); break;
     case 'document-section':
       documentSection = button.dataset.section as DocumentSection;
       await saveSetting('document_section', documentSection);
       render(); break;
     case 'workbench-section':
-      if (draft && (draft.name || draft.target || draft.editor) && !confirm(tr("当前入口尚未保存，确定切换吗？"))) break;
+      if (draft && (draft.name || draft.target || draft.editor) && !await confirmDialog(tr("当前入口尚未保存，确定切换吗？"))) break;
       workbenchSection = button.dataset.section as Kind; draft = null; search = '';
       await saveSetting('workbench_section', workbenchSection); render(); break;
     case 'select-computer':
-      if (draft && (draft.name || draft.target || draft.editor) && !confirm(tr("当前入口尚未保存，确定切换吗？"))) break;
-      if (computerDraft?.name && !confirm(tr("电脑档案尚未保存，确定切换吗？"))) break;
+      if (draft && (draft.name || draft.target || draft.editor) && !await confirmDialog(tr("当前入口尚未保存，确定切换吗？"))) break;
+      if (computerDraft?.name && !await confirmDialog(tr("电脑档案尚未保存，确定切换吗？"))) break;
       selectedComputerId = button.dataset.computerId ?? ''; draft = null; search = ''; computerDraft = null;
       await saveSetting('selected_computer_id', selectedComputerId);
       await refresh(); break;
     case 'new-computer':
-      if (draft && (draft.name || draft.target || draft.editor) && !confirm(tr("当前入口尚未保存，确定添加电脑吗？"))) break;
+      if (draft && (draft.name || draft.target || draft.editor) && !await confirmDialog(tr("当前入口尚未保存，确定添加电脑吗？"))) break;
       draft = null;
       computerDraft = { name: '', platform: computers.find(c => c.isCurrent)?.platform ?? 'windows' };
       render(); app.querySelector<HTMLInputElement>('#computer-name')?.focus(); break;
@@ -442,7 +632,7 @@ async function runAction(action: string, button: HTMLElement) {
     case 'cancel-computer': computerDraft = null; render(); break;
     case 'delete-computer': {
       const computer = computers.find(c => c.id === selectedComputerId);
-      if (!computer || computer.isCurrent || !confirm(tr("删除电脑档案“{0}”及其项目、应用入口？", [computer.name]))) break;
+      if (!computer || computer.isCurrent || !await confirmDialog(tr("删除电脑档案“{0}”及其项目、应用入口？", [computer.name]), { title: tr("删除电脑档案"), kind: 'warning', okLabel: tr("删除"), destructive: true })) break;
       await invoke('delete_computer', { id: computer.id });
       selectedComputerId = computers.find(c => c.isCurrent)?.id ?? '';
       await saveSetting('selected_computer_id', selectedComputerId);
@@ -466,7 +656,7 @@ async function runAction(action: string, button: HTMLElement) {
     case 'edit-note': {
       const note = notes.find(item => item.id === id);
       if (!note) break;
-      if (noteDraft.trim() && editingNoteId !== id && !confirm(tr("当前输入的速记尚未保存，确定改为编辑这条吗？"))) break;
+      if (noteDraft.trim() && editingNoteId !== id && !await confirmDialog(tr("当前输入的速记尚未保存，确定改为编辑这条吗？"))) break;
       editingNoteId = id; noteDraft = note.content; noteError = ''; render();
       app.querySelector<HTMLTextAreaElement>('#note-form textarea')?.focus();
       break;
@@ -474,7 +664,7 @@ async function runAction(action: string, button: HTMLElement) {
     case 'cancel-note-edit': noteDraft = ''; noteError = ''; editingNoteId = null; render(); break;
     case 'delete-note': {
       const note = notes.find(item => item.id === id);
-      if (!note || !confirm(tr("删除这条速记？"))) break;
+      if (!note || !await confirmDialog(tr("删除这条速记？"), { title: tr("删除速记"), kind: 'warning', okLabel: tr("删除"), destructive: true })) break;
       await invoke('delete_note', { id });
       noteRevision++;
       notes = notes.filter(item => item.id !== id);
@@ -486,43 +676,51 @@ async function runAction(action: string, button: HTMLElement) {
       await refresh(); break;
     case 'delete-todo': {
       const todo = todos.find(t => t.id === id);
-      if (!todo || !confirm(tr("删除待办“{0}”？", [todo.text]))) break;
+      if (!todo || !await confirmDialog(tr("删除待办“{0}”？", [todo.text]), { title: tr("删除待办"), kind: 'warning', okLabel: tr("删除"), destructive: true })) break;
       await invoke('delete_todo', { id });
       todoRevision++;
       todos = todos.filter(item => item.id !== id);
       render(); toast(tr("待办已删除")); break;
     }
-    case 'new-entry': draft = { kind: button.dataset.kind as Kind, name: '', target: '', editor: '' }; render(); app.querySelector<HTMLInputElement>('#draft-name')?.focus(); break;
+    case 'new-entry':
+      if (savingEntry || pickingEntry) break;
+      entryError = ''; draft = { kind: button.dataset.kind as Kind, name: '', target: '', editor: '' }; render(); break;
     case 'entry-menu': toggleEntryMenu(button); break;
     case 'edit-entry': {
+      if (savingEntry || pickingEntry) break;
       const kind = button.dataset.kind as Kind;
       const entry = (kind === 'project' ? projects : apps).find(x => x.id === id);
-      if (entry) draft = { id, kind, name: entry.name, target: entry.target, editor: entry.editor ?? '' };
+      if (entry) { entryError = ''; draft = { id, kind, name: entry.name, target: entry.target, editor: entry.editor ?? '' }; }
       render(); break;
     }
-    case 'cancel-entry': draft = null; render(); break;
+    case 'cancel-entry': closeEntryDialog(); break;
     case 'pick-target':
     case 'pick-editor': {
-      if (!draft) break;
+      if (!draft || savingEntry || pickingEntry) break;
+      const activeDraft = draft;
       const directory = action === 'pick-target' && draft.kind === 'project';
-      const selected = await open({ multiple: false, directory, title: directory ? tr("选择项目文件夹") : tr("选择程序或应用") });
-      if (typeof selected === 'string') {
-        const field = action === 'pick-editor' ? 'editor' : 'target';
-        draft[field] = selected;
-        if (field === 'target' && !draft.name) draft.name = selected.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
-        render();
-      }
+      pickingEntry = true; syncEntryDialog();
+      try {
+        const selected = await open({ multiple: false, directory, title: directory ? tr("选择项目文件夹") : tr("选择程序或应用") });
+        if (typeof selected === 'string' && draft === activeDraft) {
+          const field = action === 'pick-editor' ? 'editor' : 'target';
+          draft[field] = selected;
+          if (field === 'target' && !draft.name) draft.name = selected.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+          entryError = '';
+        }
+      } catch (error) { entryError = errorText(error); }
+      finally { pickingEntry = false; render(); }
       break;
     }
     case 'delete-entry':
-      if (draft?.id && confirm(tr("从小助手移除“{0}”？磁盘文件不会删除。", [draft.name]))) {
+      if (draft?.id && await confirmDialog(tr("从小助手移除“{0}”？磁盘文件不会删除。", [draft.name]), { title: tr("移除入口"), kind: 'warning', okLabel: tr("移除"), destructive: true })) {
         await invoke('delete_launcher', { id: draft.id }); draft = null; await refresh(); toast(tr("入口已移除"));
       }
       break;
     case 'remove-entry': {
       const kind = button.dataset.kind as Kind;
       const entry = (kind === 'project' ? projects : apps).find(item => item.id === id);
-      if (!entry || !confirm(tr("从小助手移除“{0}”？磁盘文件不会删除。", [entry.name]))) break;
+      if (!entry || !await confirmDialog(tr("从小助手移除“{0}”？磁盘文件不会删除。", [entry.name]), { title: tr("移除入口"), kind: 'warning', okLabel: tr("移除"), destructive: true })) break;
       await invoke('delete_launcher', { id });
       if (draft?.id === id && draft.kind === kind) draft = null;
       await refresh(); toast(tr("入口已移除")); break;
@@ -586,6 +784,7 @@ app.addEventListener('keydown',event=>{
 app.addEventListener('click', async event => {
   const button = (event.target as HTMLElement).closest<HTMLElement>('[data-action]');
   if (!button) { closeEntryMenus(); return; }
+  if (button.matches('a')) event.preventDefault();
   if (button.dataset.action !== 'entry-menu') closeEntryMenus();
   if (button.classList.contains('mini-orb') && suppressMiniExpand) { suppressMiniExpand = false; return; }
   try { await runAction(button.dataset.action!, button); }
@@ -598,6 +797,9 @@ window.addEventListener('keydown', event => {
 });
 
 app.addEventListener('cancel', event => {
+  if ((event.target as HTMLElement).matches('.entry-dialog')) {
+    event.preventDefault(); closeEntryDialog(); return;
+  }
   if ((event.target as HTMLElement).matches('.compact-todo-dialog')) {
     event.preventDefault();
     closeCompactTodo();
@@ -605,6 +807,15 @@ app.addEventListener('cancel', event => {
 }, true);
 
 app.addEventListener('scroll', closeEntryMenus, true);
+app.addEventListener('keydown', event => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('.settings-nav-button');
+  if (!button || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+  const buttons = Array.from(app.querySelectorAll<HTMLButtonElement>('.settings-nav-button'));
+  const index = buttons.indexOf(button);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+  event.preventDefault();
+  buttons[next]?.click();
+});
 window.addEventListener('resize', closeEntryMenus);
 
 app.addEventListener('mousedown', event => {
@@ -615,6 +826,14 @@ app.addEventListener('mousedown', event => {
 });
 
 app.addEventListener('pointerdown', event => {
+  const direction = (event.target as HTMLElement).closest<HTMLElement>('[data-resize]')?.dataset.resize;
+  if (event.button === 0 && mode === 'expanded' && direction) {
+    event.preventDefault();
+    const directions = ['North', 'South', 'East', 'West', 'NorthWest', 'NorthEast', 'SouthWest', 'SouthEast'] as const;
+    const edge = directions.find(value => value === direction);
+    if (edge) void windowRef.startResizeDragging(edge).catch(error => toast(errorText(error)));
+    return;
+  }
   if (event.button !== 0 || !(event.target as HTMLElement).closest('.mini-orb')) return;
   suppressMiniExpand = false;
   if (!pinned) miniDragStart = { x: event.screenX, y: event.screenY };
@@ -647,6 +866,7 @@ app.addEventListener('submit', async event => {
     submitButton.disabled = true;
     submitButton.textContent = tr("保存中…");
   }
+  if (form.id === 'entry-form') { entryError = ''; syncEntryDialog(); }
   try {
     if (await ai.submit(form)) return;
     if (form.id === 'todo-form') {
@@ -701,12 +921,13 @@ app.addEventListener('submit', async event => {
   } catch (error) {
     if (form.id === 'todo-form') { savingTodo = false; todoError = errorText(error); render(); }
     else if (form.id === 'note-form') { savingNote = false; noteError = errorText(error); render(); }
+    else if (form.id === 'entry-form') { entryError = errorText(error); syncEntryDialog(); }
     else toast(errorText(error));
   }
   finally {
     if (form.id === 'todo-form') savingTodo = false;
     if (form.id === 'note-form') savingNote = false;
-    if (form.id === 'entry-form') savingEntry = false;
+    if (form.id === 'entry-form') { savingEntry = false; syncEntryDialog(); }
     if (form.id === 'computer-form') savingComputer = false;
     if (form.isConnected && submitButton && (form.id === 'entry-form' || form.id === 'computer-form')) {
       submitButton.disabled = false;
@@ -736,6 +957,11 @@ app.addEventListener('input', event => {
     if (input.id === 'draft-name') draft.name = input.value;
     if (input.id === 'draft-target') draft.target = input.value;
     if (input.id === 'draft-editor') draft.editor = input.value;
+    if (input.closest('#entry-form')) {
+      entryError = '';
+      const error = app.querySelector<HTMLElement>('.entry-error');
+      if (error) { error.textContent = ''; error.hidden = true; }
+    }
   }
   if (computerDraft && input.id === 'computer-name') computerDraft.name = input.value;
 });
@@ -807,15 +1033,41 @@ windowRef.onMoved(({ payload }) => {
   }, 350);
 });
 
+async function centerMainWindow() {
+  const monitor = await currentMonitor().catch(() => null) ?? await primaryMonitor();
+  if (!monitor) return;
+  const size = await windowRef.outerSize();
+  await windowRef.setPosition(new PhysicalPosition(
+    monitor.workArea.position.x + Math.round((monitor.workArea.size.width - size.width) / 2),
+    monitor.workArea.position.y + Math.round((monitor.workArea.size.height - size.height) / 2),
+  ));
+}
+
+windowRef.onResized(() => {
+  clearTimeout(resizeTimer);
+  if (mode !== 'expanded' || applyingMode) return;
+  resizeTimer = window.setTimeout(async () => {
+    try {
+      if (mode !== 'expanded' || applyingMode) return;
+      const [size, scale] = await Promise.all([windowRef.innerSize(), windowRef.scaleFactor()]);
+      if (mode !== 'expanded' || applyingMode) return;
+      expandedSize = [Math.round(size.width / scale), Math.round(size.height / scale)];
+      localStorage.setItem('expanded_window_size', JSON.stringify(expandedSize));
+    } catch (error) { console.error(error); }
+  }, 250);
+});
+
 async function init() {
   try {
     setLocale(await setting('ui_language'));
     document.title = tr('桌面小助手');
-    const [savedMode, savedPage, savedSection, savedWorkbenchSection, savedComputerId, savedPinned, x, y, startup, savedVisibility, savedOrder] = await Promise.all([
-      setting('mode'), setting('page'), setting('document_section'), setting('workbench_section'), setting('selected_computer_id'), setting('pinned'), setting('window_x'), setting('window_y'), isEnabled().catch(() => false), setting('feature_visibility'), setting('feature_order'),
+    const [savedMode, savedPage, savedSection, savedWorkbenchSection, savedComputerId, savedPinned, startup, savedVisibility, savedOrder, version] = await Promise.all([
+      setting('mode'), setting('page'), setting('document_section'), setting('workbench_section'), setting('selected_computer_id'), setting('pinned'), isEnabled().catch(() => false), setting('feature_visibility'), setting('feature_order'),
+      getVersion().catch(() => ''),
     ]);
+    appVersion = version;
     mode = savedMode === 'icon' ? 'icon' : savedMode === 'compact' || savedMode === 'single' ? 'compact' : 'expanded';
-    page = savedPage === 'project' || savedPage === 'software' || savedPage === 'workbench' ? 'workbench' : savedPage === 'settings' ? 'settings' : savedPage === 'tools' ? 'tools' : savedPage === 'ai' ? 'ai' : 'document';
+    page = savedPage === 'project' || savedPage === 'software' || savedPage === 'workbench' ? 'workbench' : savedPage === 'terminal' ? 'terminal' : savedPage === 'settings' ? 'settings' : savedPage === 'tools' ? 'tools' : savedPage === 'ai' ? 'ai' : 'document';
     documentSection = savedSection === 'note' ? 'note' : 'todo';
     workbenchSection = savedPage === 'software' ? 'app' : savedPage === 'project' ? 'project' : savedWorkbenchSection === 'app' ? 'app' : 'project';
     selectedComputerId = savedComputerId ?? '';
@@ -835,7 +1087,8 @@ async function init() {
     if (savedPage === 'project' || savedPage === 'software') {
       await Promise.all([saveSetting('page', 'workbench'), saveSetting('workbench_section', workbenchSection)]);
     }
-    await invoke('restore_main_position', { x: x !== null && Number.isFinite(Number(x)) ? Math.round(Number(x)) : null, y: y !== null && Number.isFinite(Number(y)) ? Math.round(Number(y)) : null });
+    // Center after restoring the mode's size; old drag coordinates must not override startup placement.
+    await centerMainWindow();
     try { await windowRef.setAlwaysOnTop(pinned); }
     catch { pinned = false; await saveSetting('pinned', 'false'); toast(tr("当前桌面环境不支持置顶")); }
     await refresh();
@@ -875,5 +1128,7 @@ void listen('assistant-show', async () => {
   catch (error) { toast(tr("恢复窗口失败：{0}", [errorText(error)])); }
 });
 void init();
+void listen('assistant-data-changed', () => { void refresh().catch(error => toast(errorText(error))); });
 void tools.initialize();
 void ai.initialize();
+void terminal.initialize();

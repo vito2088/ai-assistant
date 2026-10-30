@@ -1,8 +1,8 @@
 {
   "bundle": {
     "windows": {
-      "wix": { "language": "zh-CN" },
-      "nsis": { "languages": ["SimpChinese", "English"], "displayLanguageSelector": true }
+      "wix": { "language": "zh-CN", "template": "installer/main.wxs", "upgradeCode": "5e7f9fd6-193c-55c1-8cb5-063d4a3cd2bb" },
+      "nsis": { "languages": ["SimpChinese", "English"], "displayLanguageSelector": true, "template": "installer/installer.nsi", "installerHooks": "installer/localized-shortcuts.nsh" }
     }
   }
 }

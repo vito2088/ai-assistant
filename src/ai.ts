@@ -1,9 +1,14 @@
 import { t, h } from './i18n';
 import { Channel, invoke } from '@tauri-apps/api/core';
-import { open, confirm } from '@tauri-apps/plugin-dialog';
+import { listen } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
+import { confirm } from './app-dialog';
+import { connectionError } from './ai-connection';
 import { modelMessages, parseTasks, taskPrompt, type Attachment, type AiMessage, type Session } from './ai-model';
 import './ai.css';
+import { AiWorkspace } from './ai-workspace';
 import { providerPresets } from './ai-presets';
+import { applyToolEvent, completeNativeTool, interruptToolRuns, toolActivityView, type ToolRun, type NativeToolResult } from './ai-tool-state';
 
 type Mapping = { name: string; model: string };
 type Config = { id: string; name: string; provider: string; baseUrl: string; model: string; vision: boolean; language: string; hasKey: boolean; modelMappings?: Mapping[] };
@@ -19,6 +24,8 @@ const modelLabel = (config: Config) => {
 };
 
 export class Ai {
+  private workspace: AiWorkspace;
+  private legacyView = false;
   private config: Config = this.blankConfig();
   private savedConfig: Config = { ...this.config };
   private catalog: Catalog = { profiles: [], activeId: '' };
@@ -28,6 +35,9 @@ export class Ai {
   private history = false;
   private pickingNotes = false;
   private ready = false;
+  private toolsEnabled = true;
+  private nativeResults = new Map<string, NativeToolResult>();
+  private recordingActive = false;
   private configBusy = false;
   private configError = '';
   private editorOpen = false;
@@ -38,6 +48,7 @@ export class Ai {
   private modelFilter = '';
   private modelListError = '';
   private fetchingModels = false;
+  private connectionTest: {id:string;cancelled:boolean;done:Promise<void>} | null = null;
   private requests = new Map<string, string>();
   private operations = new Set<string>();
   private saves = new Map<string, Promise<unknown>>();
@@ -45,18 +56,27 @@ export class Ai {
   private cancelled = new Set<string>();
   private started = new Set<string>();
   private historyBusy = false;
-  constructor(private changed: () => void, private toast: (s: string) => void, private navigate: () => void, private notes: () => Note[], private refresh: () => Promise<void>) {}
+  constructor(private changed: () => void, private toast: (s: string) => void, private navigate: () => void, private notes: () => Note[], private refresh: () => Promise<void>) {
+    this.workspace = new AiWorkspace(changed, toast, () => this.catalog.profiles, notes, refresh);
+    try { this.toolsEnabled = localStorage.getItem('ai_tools_enabled') !== 'false'; } catch { /* Optional local preference. */ }
+  }
   private blankConfig(): Config { return { id: uid(), name: '', provider: 'custom', baseUrl: '', model: '', vision: false, language: '中文', hasKey: false }; }
   private openEditor(config: Config) {
     this.config = structuredClone(config); this.editorBaseline = JSON.stringify(this.config);
     this.key = ''; this.configError = ''; this.configNotice = ''; this.resetModelList(); this.editorOpen = true;
   }
   async closeEditor() {
-    if (!this.editorOpen || this.configBusy) return;
-    if ((this.key || JSON.stringify(this.config) !== this.editorBaseline) && !await confirm(t('模型修改尚未保存，确定放弃修改吗？'), { title: t('关闭模型配置'), kind: 'warning' })) return;
+    if (!this.editorOpen || (this.configBusy && !this.connectionTest)) return;
+    if (this.connectionTest) {
+      const test = this.connectionTest; test.cancelled = true;
+      await invoke('ai_cancel', {requestId:test.id});
+      await test.done;
+    }
+    if ((this.key || JSON.stringify(this.config) !== this.editorBaseline) && !await confirm(t('模型修改尚未保存，确定放弃修改吗？'), { title: t('关闭模型配置'), kind: 'warning', okLabel: t('放弃修改'), destructive: true })) return;
     this.editorOpen = false; this.key = ''; this.config = structuredClone(this.savedConfig); this.configError = ''; this.configNotice = ''; this.resetModelList(); this.changed();
   }
   restoreEditor() {
+    this.workspace.afterRender();
     const dialog = document.querySelector<HTMLDialogElement>('.ai-profile-dialog');
     if (dialog && !dialog.open) {
       dialog.showModal();
@@ -67,7 +87,10 @@ export class Ai {
   private resetModelList() {
     this.remoteModels = null; this.modelPickerIndex = -1; this.modelFilter = ''; this.modelListError = '';
     document.querySelector('.ai-model-picker')?.remove();
-    document.querySelectorAll<HTMLButtonElement>('[data-action="ai-open-models"]').forEach(button => { button.disabled = true; });
+    document.querySelectorAll<HTMLButtonElement>('[data-action="ai-open-models"]').forEach(button => {
+      button.closest('.ai-model-input')?.classList.remove('has-options');
+      button.remove();
+    });
     document.querySelector('.ai-model-list-status')?.remove();
   }
   private addMappings(models: Mapping[]) {
@@ -95,11 +118,39 @@ export class Ai {
   async initialize() {
     try {
       this.sessions = await invoke<Session[]>('ai_sessions');
-      for (const s of this.sessions) for (const m of s.messages) if (m.status === 'generating') { m.status = 'error'; m.error = t("上次生成已中断，可重试"); }
+      for (const s of this.sessions) for (const m of s.messages) {
+        if (m.status === 'generating') { m.status = 'error'; m.error = t("上次生成已中断，可重试"); }
+        if (m.toolRuns?.length) m.toolRuns = interruptToolRuns(m.toolRuns);
+      }
+      await listen<NativeToolResult>('native-capture-finished', event => {
+        this.nativeResults.set(event.payload.id, event.payload);
+        if (this.nativeResults.size > 100) this.nativeResults.delete(this.nativeResults.keys().next().value!);
+        for (const s of this.sessions) {
+          let touched = false;
+          for (const m of s.messages) if (m.toolRuns?.some(run => run.result?.data?.operationId === event.payload.id)) {
+            m.toolRuns = completeNativeTool(m.toolRuns, event.payload); touched = true;
+          }
+          if (touched) void this.persist(s).catch(e => this.toast(errorText(e)));
+        }
+        this.changed();
+      });
+      await listen<{ active: boolean }>('tools-recording', event => {
+        this.recordingActive = event.payload.active;
+        if (!event.payload.active) return;
+        for (const s of this.sessions) for (const m of s.messages) {
+          const pending = m.toolRuns?.filter(run => run.name === 'assistant_start_recording' && run.state === 'awaiting_user') ?? [];
+          if (pending.length) {
+            m.toolRuns = m.toolRuns!.map(run => pending.includes(run) ? { ...run, state: 'success', result: { ...run.result!, data: { ...run.result?.data, state: 'recording', message: '录屏已开始' } } } : run);
+            void this.persist(s).catch(e => this.toast(errorText(e))); this.changed();
+          }
+        }
+      });
       this.current = this.sessions[0]?.id ?? '';
       this.ready = true;
       try { this.applyCatalog(await invoke<Catalog>('ai_settings')); this.config = { ...this.savedConfig }; }
       catch (e) { this.configError = errorText(e); }
+      try { await this.workspace.initialize(this.sessions); }
+      catch (e) { this.toast(errorText(e)); }
       this.changed();
     } catch (e) { this.toast(t("读取 AI 数据失败：{0}", [errorText(e)])); }
   }
@@ -107,10 +158,12 @@ export class Ai {
     if (!this.ready || this.configBusy || this.requests.size) return false;
     const editing = this.key !== '' || JSON.stringify(this.config) !== JSON.stringify(this.savedConfig);
     this.applyCatalog(await invoke<Catalog>('ai_settings'));
+    await this.workspace.syncProfiles();
     if (!editing) this.config = { ...this.savedConfig };
     this.configError = '';
     return true;
   }
+  prepareModelSettings() { return this.workspace.prepareModelSettings(); }
   private session() { return this.sessions.find(s => s.id === this.current); }
   private create(title = '新对话', source?: Session['source']) {
     const s: Session = { id: uid(), title, updatedAt: Date.now(), messages: [], source, attachments: [] };
@@ -134,24 +187,26 @@ export class Ai {
     return `<span class="ai-attachment">${a.image ? `<img src="${esc(a.image)}" alt="${esc(a.name)}">` : '▤ '}${esc(a.name)}${removable ? this.button('remove-attachment', '×', undefined, `data-attachment="${a.id}" aria-label="${h("移除引用")}"`) : ''}</span>`;
   }
   view() {
+    if (this.workspace.ready && !this.legacyView) return this.workspace.view();
     if (!this.ready) return `<section class="ai-page"><p>${h("正在读取 AI 数据…")}</p></section>`;
     const s = this.session();
-    const content = `<section class="ai-page"><div class="ai-toolbar"><strong>${esc(s?.title === '新对话' && !s.messages.length ? t('新对话') : s?.title ?? t("AI 助手"))}</strong>${this.button('new', t('新对话'))}${this.button('history', t("历史"))}</div>
+    const content = `<section class="ai-page">${this.legacyView ? `<button type="button" data-action="aiw-back">${h("返回 AI 会话")}</button>` : ''}<div class="ai-toolbar"><strong>${esc(s?.title === '新对话' && !s.messages.length ? t('新对话') : s?.title ?? t("AI 助手"))}</strong>${this.button('new', t('新对话'))}${this.button('history', t("历史"))}</div>
       ${this.history ? `<div class="ai-history">${this.sessions.length ? this.sessions.map(item => `<div>${this.button('select', esc(item.title === '新对话' && !item.messages.length ? t('新对话') : item.title), item)}${this.button('delete', t("删除"), item, '', this.requests.has(item.id))}</div>`).join('') : `<p>${h("还没有会话")}</p>`}</div>` : ''}
-      <div class="ai-messages scroll-area" data-scroll-key="ai-chat-${s?.id ?? 'empty'}">${s?.messages.length ? s.messages.map(m => `<article class="ai-message ${m.role}"><strong>${m.role === 'user' ? t("你") : esc(m.modelLabel ?? 'AI')}</strong>${(m.attachments ?? []).map(a => this.attachmentView(a)).join('')}<div class="ai-text" data-ai-message="${m.id}">${esc(m.text || (m.status === 'generating' ? t("正在思考…") : ''))}</div>${m.error ? `<p class="tool-error">${esc(m.error)}</p>` : ''}${m.role === 'assistant' && m.text && m.status === 'done' ? `<div class="ai-actions">${this.button('copy', t("复制"), s, `data-message="${m.id}"`)}${this.button('save-note', t("另存速记"), s, `data-message="${m.id}"`)}${this.button('extract', t("提取待办"), s, `data-message="${m.id}"`, this.requests.has(s.id))}</div>` : ''}</article>`).join('') : `<div class="ai-empty"><strong>${h("今天需要什么帮助？")}</strong><p>${h("整理速记、解释截图，或者直接聊聊。")}</p><p>${h("在下方引用速记或添加图片，只有选中的内容会随会话发送。")}</p></div>`}${s ? this.taskView(s) : ''}${s && this.latest(s)?.status === 'error' ? this.button('retry', t("重试上次请求"), s, '', this.requests.has(s.id)) : ''}</div>
+      <div class="ai-messages scroll-area" data-scroll-key="ai-chat-${s?.id ?? 'empty'}">${s?.messages.length ? s.messages.map(m => `<article class="ai-message ${m.role}"><strong>${m.role === 'user' ? t("你") : esc(m.modelLabel ?? 'AI')}</strong>${(m.attachments ?? []).map(a => this.attachmentView(a)).join('')}<div class="ai-text" data-ai-message="${m.id}">${esc(m.text || (m.status === 'generating' ? t("正在思考…") : ''))}</div>${toolActivityView(m.toolRuns)}${m.error ? `<p class="tool-error">${esc(m.error)}</p>` : ''}${m.role === 'assistant' && m.text && m.status === 'done' ? `<div class="ai-actions">${this.button('copy', t("复制"), s, `data-message="${m.id}"`)}${this.button('save-note', t("另存速记"), s, `data-message="${m.id}"`)}${this.button('extract', t("提取待办"), s, `data-message="${m.id}"`, this.requests.has(s.id))}</div>` : ''}</article>`).join('') : `<div class="ai-empty"><strong>${h("今天需要什么帮助？")}</strong><p>${h("整理速记、解释截图，或者直接聊聊。")}</p><p>${h("在下方引用速记或添加图片，只有选中的内容会随会话发送。")}</p></div>`}${s ? this.taskView(s) : ''}${s && this.latest(s)?.status === 'error' ? this.button('retry', t("重试上次请求"), s, '', this.requests.has(s.id)) : ''}</div>
       ${this.pickingNotes ? `<div class="ai-note-picker"><strong>${h("选择要引用的速记")}</strong>${this.notes().length ? this.notes().map(n => this.button('attach-note', esc(n.content.slice(0, 65)), undefined, `data-note="${n.id}"`)).join('') : `<p>${h("还没有速记")}</p>`}</div>` : ''}
-      <form id="ai-chat-form" class="ai-composer"><div class="ai-attachments">${(s?.attachments ?? []).map(a => this.attachmentView(a, true)).join('')}</div><textarea id="ai-input" maxlength="16000" placeholder="${h("输入问题…")}" aria-label="${h("AI 消息")}">${esc(s?.draft ?? '')}</textarea><div class="ai-actions">${this.button('pick-note', t("引用速记"))}${this.button('attach-image', t("添加图片"), undefined, '', !this.savedConfig.vision)}<span></span>${s && this.requests.has(s.id) ? this.button('stop', t("停止生成"), s) : `<button class="primary small" type="submit">${h("发送")}</button>`}</div><small>${h("发送至已配置服务 ·")} ${esc(modelLabel(this.savedConfig) || t("请先在设置中配置 AI"))} ${h("· 不自动读取其他资料")}</small></form></section>`;
+      <form id="ai-chat-form" class="ai-composer">${!s?.source ? `<label class="ai-tool-toggle"><input type="checkbox" id="ai-tools-enabled" ${this.toolsEnabled ? 'checked' : ''} ${this.requests.size ? 'disabled' : ''}><span>${h('操作小助手')}</span><small>${h('可创建待办、速记、提醒及调用截图录屏')}</small></label>` : ''}<div class="ai-attachments">${(s?.attachments ?? []).map(a => this.attachmentView(a, true)).join('')}</div><textarea id="ai-input" maxlength="16000" placeholder="${h("输入问题…")}" aria-label="${h("AI 消息")}">${esc(s?.draft ?? '')}</textarea><div class="ai-actions">${this.button('pick-note', t("引用速记"))}${this.button('attach-image', t("添加图片"), undefined, '', !this.savedConfig.vision)}<span></span>${s && this.requests.has(s.id) ? this.button('stop', t("停止生成"), s) : `<button class="primary small" type="submit">${h("发送")}</button>`}</div><small>${h("发送至已配置服务 ·")} ${esc(modelLabel(this.savedConfig) || t("请先在设置中配置 AI"))} ${h("· 不自动读取其他资料")}</small></form></section>`;
     if (this.chatAvailable()) return content;
-    return `<section class="ai-gated">${content.replace('class="ai-page"', 'class="ai-page ai-locked-content" inert aria-hidden="true"')}<div class="ai-key-mask"><div role="status"><span class="ai-key-symbol" aria-hidden="true">⌁</span><strong>${h('请先配置 API 密钥')}</strong><p>${h('配置并选中模型后即可使用 AI 功能。')}</p><button class="primary" data-action="ai-configure">${h('前往配置密钥')}</button></div></div></section>`;
+    return `<section class="ai-gated">${content.replace('class="ai-page"', 'class="ai-page ai-locked-content" inert aria-hidden="true"')}<div class="ai-key-mask"><div role="status"><span class="ai-key-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-3 3 3 3m-5-1 3 3"/></svg></span><strong>${h('请先配置 API 密钥')}</strong><p>${h('配置并选中模型后即可使用 AI 功能。')}</p><button class="primary" data-action="ai-configure">${h('前往配置密钥')}</button></div></div></section>`;
   }
   settingsView() {
     const preset = providerPresets.find(p => p.id === this.config.provider) ?? providerPresets[0];
     const saved = this.catalog.profiles.find(p => p.id === this.config.id);
     const sameEndpoint = saved?.baseUrl === this.config.baseUrl.trim().replace(/\/+$/, '');
     const busy = this.configBusy || this.requests.size > 0 || !this.ready;
-    return `<section class="capture-settings ai-settings"><div class="ai-toolbar"><strong>${h("AI 模型")}</strong>${this.button('add-model', t("＋ 添加模型"), undefined, '', busy || this.catalog.profiles.length >= 50)}</div><p class="tool-hint">${h("可保存多个模型，点击「使用」选中一个。聊天、速记和截图使用当前选中的模型。")}</p>
-      <div class="ai-profile-list">${this.catalog.profiles.length ? this.catalog.profiles.map(p => `<div class="ai-profile ${p.id === this.catalog.activeId ? 'active' : ''}"><div><strong>${esc(p.name)}${p.id === this.catalog.activeId ? `<small>${h("当前")}</small>` : ''}</strong><span>${esc(modelLabel(p))}${p.vision ? t(" · 支持图片") : ''}</span></div><div class="ai-actions">${this.button('use-model', t("使用"), undefined, `data-profile="${esc(p.id)}"`, busy || p.id === this.catalog.activeId)}${this.button('edit-model', t("编辑"), undefined, `data-profile="${esc(p.id)}"`, busy)}${this.button('delete-model', t("删除"), undefined, `data-profile="${esc(p.id)}"`, busy)}</div></div>`).join('') : `<p class="tool-hint">${h("还没有模型，点击「添加模型」开始配置。")}</p>`}</div>
-      ${this.editorOpen ? `<dialog class="ai-profile-dialog ai-settings" aria-labelledby="ai-profile-title"><header><strong id="ai-profile-title">${saved ? t("编辑模型") : t("添加模型")}</strong>${this.button('close-editor', '×', undefined, `class="ai-editor-close" aria-label="${h('关闭')}"`, busy)}</header><form id="ai-settings-form" class="ai-profile-editor"><fieldset class="ai-profile-fields scroll-area" data-scroll-key="ai-profile-${esc(this.config.id)}" ${busy ? 'disabled' : ''}>
+    return `<section class="capture-settings ai-settings"><div class="ai-toolbar"><strong>${h("AI 模型")}</strong>${this.button('add-model', t("＋ 添加模型"), undefined, '', busy || this.catalog.profiles.length >= 50)}</div>
+      <section class="ai-primary-card"><div class="ai-primary-row"><label for="ai-primary-model">${h('主 AI')}</label><select id="ai-primary-model" aria-describedby="ai-primary-hint" ${busy || !this.catalog.profiles.length ? 'disabled' : ''}>${this.catalog.profiles.length ? this.catalog.profiles.map(p=>`<option value="${esc(p.id)}" ${p.id===this.catalog.activeId?'selected':''}>${esc(`${p.name} · ${modelLabel(p)}`)}</option>`).join('') : `<option value="">${h('请先添加模型配置')}</option>`}</select></div><p id="ai-primary-hint">${h('用于 AI 翻译、速记整理和截图解释，切换后自动保存。')}<br>${h('聊天联系人仍使用各自绑定的模型。')}</p></section>
+      <div class="ai-profile-list">${this.catalog.profiles.length ? this.catalog.profiles.map(p => `<div class="ai-profile ${p.id === this.catalog.activeId ? 'active' : ''}"><div><strong>${esc(p.name)}${p.id === this.catalog.activeId ? `<small>${h('主 AI')}</small>` : ''}</strong><span>${esc(modelLabel(p))}${p.vision ? t(" · 支持图片") : ''}</span></div><div class="ai-actions">${this.button('use-model', t('设为主 AI'), undefined, `data-profile="${esc(p.id)}"`, busy || p.id === this.catalog.activeId)}${this.button('edit-model', t("编辑"), undefined, `data-profile="${esc(p.id)}"`, busy)}${this.button('delete-model', t("删除"), undefined, `data-profile="${esc(p.id)}"`, busy)}</div></div>`).join('') : `<p class="tool-hint">${h("还没有模型，点击「添加模型」开始配置。")}</p>`}</div>
+      ${this.editorOpen ? `<dialog class="ai-profile-dialog ai-settings" aria-labelledby="ai-profile-title"><header><strong id="ai-profile-title">${saved ? t("编辑模型") : t("添加模型")}</strong><div class="ai-editor-actions">${this.button('test', this.connectionTest ? t("测试中…") : t("测试连通"), undefined, 'class="ai-test-connection"', busy)}${this.button('close-editor', '×', undefined, `class="ai-editor-close" aria-label="${h('关闭')}"`, busy && !this.connectionTest)}</div></header><form id="ai-settings-form" class="ai-profile-editor"><fieldset class="ai-profile-fields scroll-area" data-scroll-key="ai-profile-${esc(this.config.id)}" ${busy ? 'disabled' : ''}>
       <label class="tool-field">${h("服务预设")}<select id="ai-provider" ${busy ? 'disabled' : ''}>${['自定义', '国内', '国外', '本机'].map(group => `<optgroup label="${h(group === '本机' ? '本机模型' : group)}">${providerPresets.filter(p => p.group === group).map(p => `<option value="${p.id}" ${p.id === preset.id ? 'selected' : ''}>${h(p.name)}</option>`).join('')}</optgroup>`).join('')}</select></label><p class="tool-hint">${h(preset.hint)}</p>
       <label class="tool-field">${h("配置名称")}<input id="ai-config-name" maxlength="80" value="${esc(this.config.name)}" placeholder="${h("例如：日常问答、截图识别")}" required></label>
       <label class="tool-field">${h("服务地址")}<input id="ai-base-url" value="${esc(this.config.baseUrl)}" placeholder="${h("https://服务地址/v1")}" required></label>
@@ -159,11 +214,11 @@ export class Ai {
       <label class="tool-checkbox"><input id="ai-vision" type="checkbox" ${this.config.vision ? 'checked' : ''}>${h("所选模型支持图片")}</label>
       <label class="tool-field">${h("默认翻译语言")}<select id="ai-language">${!translationLanguages.some(([value]) => value === this.config.language) ? `<option value="${esc(this.config.language)}" selected>${esc(this.config.language)}</option>` : ''}${translationLanguages.map(([value, label]) => `<option value="${esc(value)}" ${value === this.config.language ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
       <section class="ai-model-mappings"><div class="ai-toolbar"><strong>${h('模型映射')}</strong></div><p class="tool-hint">${h('显示名称便于辨认，实际模型用于请求。选择一条作为此配置的当前模型，保存后生效。')}</p><div class="ai-actions">${this.button('add-mapping', t('添加映射'), undefined, '', busy || this.mappings().length >= 50)}${this.button('preset-mappings', t('一键设置'), undefined, '', busy || !preset.models.length)}${this.button('fetch-models', this.fetchingModels ? t('正在获取…') : t('获取模型列表'), undefined, '', busy)}</div><p class="tool-hint">${h('一键设置会补入当前服务的常用模型，保留已有映射。')}</p>
-      ${this.mappings().map((row, i) => `<div class="ai-mapping-row"><div class="ai-toolbar"><label class="tool-checkbox"><input type="radio" name="ai-mapping-active" data-mapping-active="${i}" ${this.config.model === row.model ? 'checked' : ''}>${h('使用此模型')}</label>${this.button('remove-mapping', t('删除'), undefined, `data-index="${i}"`, busy)}</div><label class="tool-field">${h('显示名称')}<input data-mapping-name="${i}" maxlength="80" value="${esc(row.name)}" required></label><div class="tool-field"><label for="ai-mapping-model-${i}">${h('实际模型')}</label><div class="ai-model-input"><input id="ai-mapping-model-${i}" data-mapping-model="${i}" maxlength="200" value="${esc(row.model)}" placeholder="${h('填写服务提供的模型 ID，可自定义')}" required>${this.button('open-models', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>', undefined, `class="ai-model-dropdown" data-index="${i}" aria-haspopup="dialog" aria-controls="ai-model-picker" aria-label="${h('选择模型')}" title="${h(this.remoteModels === null ? '请先获取模型列表' : '选择模型')}"`, busy || this.remoteModels === null)}</div></div></div>`).join('')}
+      ${this.mappings().map((row, i) => `<div class="ai-mapping-row"><div class="ai-toolbar"><label class="tool-checkbox"><input type="radio" name="ai-mapping-active" data-mapping-active="${i}" ${this.config.model === row.model ? 'checked' : ''}>${h('使用此模型')}</label>${this.button('remove-mapping', t('删除'), undefined, `data-index="${i}"`, busy)}</div><label class="tool-field">${h('显示名称')}<input data-mapping-name="${i}" maxlength="80" value="${esc(row.name)}" required></label><div class="tool-field"><label for="ai-mapping-model-${i}">${h('实际模型')}</label><div class="ai-model-input ${this.remoteModels !== null ? 'has-options' : ''}"><input id="ai-mapping-model-${i}" data-mapping-model="${i}" maxlength="200" value="${esc(row.model)}" placeholder="${h('填写服务提供的模型 ID，可自定义')}" required>${this.remoteModels !== null ? this.button('open-models', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>', undefined, `class="ai-model-dropdown" data-index="${i}" aria-haspopup="dialog" aria-controls="ai-model-picker" aria-label="${h('选择模型')}" title="${h('选择模型')}"`, busy) : ''}</div></div></div>`).join('')}
       ${this.modelListError ? `<p class="tool-error" role="alert">${esc(this.modelListError)}</p>` : ''}
       ${this.remoteModels !== null ? `<p class="tool-hint ai-model-list-status" role="status">${h('已获取 {0} 个模型，点击输入框右侧箭头选择。', [this.remoteModels.length])}</p><div id="ai-model-picker" class="ai-model-picker" popover="auto" role="dialog" aria-label="${h('选择模型')}"><div class="ai-toolbar"><strong>${h('选择模型')}</strong>${this.button('close-models', t('关闭'))}</div><input id="ai-model-filter" value="${esc(this.modelFilter)}" placeholder="${h('搜索模型')}" aria-label="${h('搜索模型')}"><div class="ai-model-options">${this.modelOptions()}</div></div>` : ''}</section>
       <div class="ai-actions">${this.button('clear-key', t("移除已保存密钥"), undefined, '', busy || !sameEndpoint || !saved?.hasKey)}</div>
-      <p class="tool-hint">${h("预设可修改；可用模型与图片能力以服务账号为准。更换地址后请重新填写密钥。新增模型需分别设置密钥。")}</p></fieldset><footer>${this.configError ? `<p class="tool-error" role="alert">${esc(this.configError)}</p>` : this.configNotice ? `<p class="ai-config-notice" role="status">${esc(this.configNotice)}</p>` : ''}<div class="ai-save-actions"><button class="ai-save-primary" type="submit" ${busy ? 'disabled' : ''}>${h("保存配置")}</button>${this.button('test', t("保存并测试"), undefined, 'class="ai-save-test"', busy)}</div></footer></form></dialog>` : ''}
+      <p class="tool-hint">${h("预设可修改；可用模型与图片能力以服务账号为准。更换地址后请重新填写密钥。新增模型需分别设置密钥。")}</p></fieldset><footer>${this.configError ? `<p class="tool-error" role="alert">${esc(this.configError)}</p>` : this.configNotice ? `<p class="ai-config-notice" role="status">${esc(this.configNotice)}</p>` : ''}<div class="ai-save-actions">${this.button('close-editor', t("取消"), undefined, 'class="ai-save-cancel"', busy && !this.connectionTest)}<button class="ai-save-primary" type="submit" ${busy ? 'disabled' : ''}>${h("保存配置")}</button></div></footer></form></dialog>` : ''}
       <p class="tool-hint">${h("密钥保存在系统凭据库。聊天及附件保存在本机；切换服务后发送消息，会将当前会话上下文和引用资料发送给所选服务。连接测试只发送一条测试消息。")}</p>${this.button('clear-history', t("清空聊天记录和附件"), undefined, '', this.requests.size > 0 || !this.ready)}</section>`;
   }
   private modelOptions() {
@@ -187,6 +242,7 @@ export class Ai {
     return `<div class="ai-tasks"><strong>${h("待办候选")}</strong>${s.tasks.length ? s.tasks.map((t, i) => `<label><input type="checkbox" data-ai-task="${i}" data-session="${s.id}" ${t.checked ? 'checked' : ''} ${t.added ? 'disabled' : ''}><input aria-label="${h("待办候选")} ${i + 1}" maxlength="200" data-ai-task-text="${i}" data-session="${s.id}" value="${esc(t.text)}" ${t.added ? 'disabled' : ''}>${t.added ? `<small>${h("已添加")}</small>` : ''}</label>`).join('') : `<p>${h("没有提取到明确待办。")}</p>`}${s.tasks.some(t => !t.added) ? this.button('add-todos', t("添加勾选项"), s, '', this.operations.has(s.id)) : ''}</div>`;
   }
   input(input: HTMLInputElement | HTMLTextAreaElement) {
+    if (this.workspace.input(input)) return;
     if (input.id === 'ai-model-filter') {
       if (this.modelFilter === input.value) return;
       this.modelFilter = input.value;
@@ -195,6 +251,7 @@ export class Ai {
     }
     if (input.dataset.mappingName !== undefined || input.dataset.mappingModel !== undefined || input.dataset.mappingActive !== undefined) {
       if (this.configBusy) return;
+      this.clearConnectionResult();
       const rows = this.mappings().map(row => ({ ...row }));
       const i = Number(input.dataset.mappingName ?? input.dataset.mappingModel ?? input.dataset.mappingActive);
       const row = rows[i]; if (!row) return;
@@ -206,6 +263,7 @@ export class Ai {
     const configFields: Record<string, keyof Config> = { 'ai-config-name': 'name', 'ai-base-url': 'baseUrl', 'ai-language': 'language' };
     const field = configFields[input.id];
     if (field) {
+      this.clearConnectionResult();
       if (field === 'baseUrl' && this.config.baseUrl !== input.value) {
         this.resetModelList();
         this.key = '';
@@ -214,7 +272,7 @@ export class Ai {
       }
       (this.config[field] as string) = input.value; return;
     }
-    if (input.id === 'ai-api-key') { this.key = input.value; this.resetModelList(); return; }
+    if (input.id === 'ai-api-key') { this.clearConnectionResult(); this.key = input.value; this.resetModelList(); return; }
     if (input.id === 'ai-vision') { this.config.vision = (input as HTMLInputElement).checked; return; }
     let s = this.session();
     if (input.id === 'ai-input') { s ??= this.create(); s.draft = input.value; }
@@ -230,6 +288,17 @@ export class Ai {
     }
   }
   async change(input: HTMLInputElement | HTMLSelectElement) {
+    if (await this.workspace.change(input)) return true;
+    if (input.id === 'ai-primary-model') {
+      if (input.value && input.value !== this.catalog.activeId) await this.selectModel(input.value);
+      document.querySelector<HTMLSelectElement>('#ai-primary-model')?.focus({ preventScroll: true });
+      return true;
+    }
+    if (input.id === 'ai-tools-enabled') {
+      this.toolsEnabled = (input as HTMLInputElement).checked;
+      try { localStorage.setItem('ai_tools_enabled', String(this.toolsEnabled)); } catch { /* Optional local preference. */ }
+      this.changed(); return true;
+    }
     if (input.id === 'ai-provider') {
       this.configAvailable();
       const preset = providerPresets.find(p => p.id === input.value);
@@ -237,7 +306,7 @@ export class Ai {
         const model = preset.models[0];
         this.config = { ...this.config, provider: preset.id, name: preset.id === 'custom' ? '' : preset.name, baseUrl: preset.baseUrl, model: model?.id ?? '', vision: model?.vision ?? false, hasKey: false, modelMappings: model ? [{ name: model.id, model: model.id }] : [] };
         this.resetModelList();
-        this.key = ''; this.configError = ''; this.changed();
+        this.key = ''; this.configError = ''; this.configNotice = ''; this.changed();
       }
       return true;
     }
@@ -246,7 +315,11 @@ export class Ai {
   private async selectModel(id: string) {
     this.configAvailable();
     this.configBusy = true; this.changed();
-    try { this.applyCatalog(await invoke<Catalog>('ai_select_model', { id })); }
+    try {
+      this.applyCatalog(await invoke<Catalog>('ai_select_model', { id }));
+      if (!this.editorOpen) this.config = structuredClone(this.savedConfig);
+      this.toast(t('主 AI 已切换为「{0}」', [this.savedConfig.name]));
+    }
     finally { this.configBusy = false; this.changed(); }
   }
   private async fetchModels() {
@@ -259,7 +332,25 @@ export class Ai {
     catch (error) { this.modelListError = errorText(error); }
     finally { this.configBusy = false; this.fetchingModels = false; this.changed(); }
   }
+  private async testConnection() {
+    this.configAvailable();
+    const test={id:uid(),cancelled:false,done:Promise.resolve()};
+    this.connectionTest=test;this.configBusy=true;this.configError='';this.configNotice='';this.changed();
+    test.done=(async()=>{
+      try {
+        const result=await invoke<{elapsedMs:number}>('ai_test_connection',{requestId:test.id,settings:structuredClone(this.config),apiKey:this.key||null});
+        if(!test.cancelled){this.configNotice=t('连接测试成功 · {0} ms；测试不会保存配置。',[result.elapsedMs]);this.toast(this.configNotice);}
+      } catch(error) {if(!test.cancelled)this.configError=connectionError(error);}
+      finally {if(this.connectionTest===test){this.connectionTest=null;this.configBusy=false;}this.changed();}
+    })();
+    await test.done;
+  }
+  private clearConnectionResult() {
+    this.configError='';this.configNotice='';
+    document.querySelectorAll('.ai-profile-dialog footer .tool-error,.ai-profile-dialog footer .ai-config-notice').forEach(node=>node.remove());
+  }
   async submit(form: HTMLFormElement) {
+    if (await this.workspace.submit(form)) return true;
     if (form.id === 'ai-settings-form') { if (this.configBusy) return true; await this.saveConfig(); this.editorOpen = false; this.resetModelList(); this.changed(); return true; }
     if (form.id !== 'ai-chat-form') return false;
     if (!this.ready || this.historyBusy) throw new Error(t("AI 数据正在加载或清理，请稍候"));
@@ -300,12 +391,26 @@ export class Ai {
     }
     const profileId = this.savedConfig.id;
     const response: AiMessage = { id: uid(), role: 'assistant', text: '', status: 'generating', modelLabel: `${this.savedConfig.name} · ${modelLabel(this.savedConfig)}` };
-    const payload = modelMessages(s.messages);
+    const allowTools = this.toolsEnabled && !tasks && !s.source;
+    const toolScope = `${s.id}:${s.messages.filter(message => message.role === 'user').at(-1)?.id ?? response.id}`;
+    const payload = modelMessages(s.messages, allowTools);
     s.messages.push(response);
     if (tasks) s.taskMessage = response.id;
     const requestId = uid(); this.requests.set(s.id, requestId); this.changed();
     let timer: number | undefined;
     const onDelta = new Channel<string>();
+    const onTool = new Channel<ToolRun>();
+    onTool.onmessage = event => {
+      if (!this.sessions.includes(s) || !s.messages.includes(response)) return;
+      if (event.name === 'assistant_start_recording' && event.state === 'awaiting_user' && this.recordingActive) {
+        event = { ...event, state: 'success', result: { ...event.result!, data: { ...event.result?.data, state: 'recording', message: '录屏已开始' } } };
+      }
+      response.toolRuns = applyToolEvent(response.toolRuns, event);
+      const operationId = event.result?.data?.operationId;
+      if (typeof operationId === 'string' && this.nativeResults.has(operationId)) response.toolRuns = completeNativeTool(response.toolRuns, this.nativeResults.get(operationId)!);
+      void this.persist(s).catch(e => this.toast(errorText(e)));
+      this.changed();
+    };
     onDelta.onmessage = delta => {
       response.text += delta;
       if (!timer) timer = window.setTimeout(() => {
@@ -321,12 +426,13 @@ export class Ai {
       await this.persist(s);
       if (this.cancelled.has(requestId)) throw new Error(t("已停止生成"));
       this.started.add(requestId);
-      response.text = await invoke<string>('ai_generate', { requestId, profileId, messages: payload, onDelta });
+      response.text = await invoke<string>('ai_generate', { requestId, profileId, messages: payload, onDelta, allowTools, toolScope, clientTime: `${new Date().toString()} | ${new Date().toISOString()}`, onTool });
       response.status = 'done';
       if (s.taskMessage === response.id) { s.tasks = parseTasks(response.text); }
     } catch (e) { response.status = 'error'; response.error = errorText(e); }
     finally {
       clearTimeout(timer);
+      if (response.status === 'error') response.toolRuns = response.toolRuns?.map(run => run.state === 'running' ? { ...run, state: 'interrupted' } : run);
       this.started.delete(requestId);
       try { await this.persist(s); } catch (e) { this.toast(t("保存会话失败：{0}", [errorText(e)])); }
       this.requests.delete(s.id);
@@ -336,6 +442,9 @@ export class Ai {
   }
   private async image(path: string): Promise<Attachment> { return { id: uid(), name: path.split(/[\\/]/).pop() ?? t("截图"), image: await invoke<string>('ai_image', { path }) }; }
   async action(action: string, button: HTMLElement) {
+    if (action === 'aiw-legacy-session') { const s=this.sessions.find(s=>s.id===button.dataset.id);if(s){this.legacyView=true;this.current=s.id;this.navigate();}return true; }
+    if (action === 'aiw-back') { this.legacyView = false; this.changed(); return true; }
+    if (await this.workspace.action(action, button)) return true;
     if (!action.startsWith('ai-')) return false;
     if (!this.ready) throw new Error(t("AI 数据尚未加载完成"));
     if (this.historyBusy) throw new Error(t("正在清理聊天记录，请稍候"));
@@ -405,7 +514,7 @@ export class Ai {
       if (!profile) return true;
       this.configBusy = true; this.changed();
       try {
-        if (await confirm(t("删除模型配置「{0}」及其当前地址的密钥？聊天记录会保留。", [profile.name]), { title: t("删除模型配置"), kind: 'warning' })) {
+        if (await confirm(t("删除模型配置「{0}」及其当前地址的密钥？聊天记录会保留。", [profile.name]), { title: t("删除模型配置"), kind: 'warning', okLabel: t('删除'), destructive: true })) {
           this.applyCatalog(await invoke<Catalog>('ai_delete_model', { id: profile.id }));
           if (this.config.id === profile.id) { this.config = { ...this.savedConfig }; this.key = ''; this.configError = ''; }
         }
@@ -414,7 +523,7 @@ export class Ai {
     else if (action === 'ai-new') { const fresh = this.create(); this.history = false; await this.persist(fresh); }
     else if (action === 'ai-history') this.history = !this.history;
     else if (action === 'ai-select' && s) { this.current = s.id; this.history = false; }
-    else if (action === 'ai-continue' && s) { this.current = s.id; this.navigate(); }
+    else if (action === 'ai-continue' && s) { this.legacyView = true; this.current = s.id; this.navigate(); }
     else if (action === 'ai-stop' && s) {
       const requestId = this.requests.get(s.id);
       if (requestId) {
@@ -424,14 +533,14 @@ export class Ai {
     }
     else if (action === 'ai-retry' && s && !this.requests.has(s.id)) {
       const last = this.latest(s); const tasks = last?.id === s.taskMessage;
-      if (last?.status === 'error') s.messages.splice(s.messages.indexOf(last), 1);
+      if (last?.status === 'error' && !last.toolRuns?.length) s.messages.splice(s.messages.indexOf(last), 1);
       await this.send(s, undefined, undefined, tasks);
     }
     else if (action === 'ai-delete' && s && !this.requests.has(s.id)) {
       if (this.operations.size) throw new Error(t("请等待当前操作完成"));
       this.historyBusy = true;
       try {
-      if (await confirm(t("删除此会话及其附件？"), { title: t("删除 AI 会话"), kind: 'warning' })) {
+      if (await confirm(t("删除此会话及其附件？"), { title: t("删除 AI 会话"), kind: 'warning', okLabel: t('删除'), destructive: true })) {
         clearTimeout(this.draftTimers.get(s.id)); this.draftTimers.delete(s.id);
         await this.saves.get(s.id)?.catch(() => {});
         await invoke('ai_delete_session', { id: s.id }); this.sessions = this.sessions.filter(item => item.id !== s.id);
@@ -444,20 +553,17 @@ export class Ai {
       if (this.operations.size) throw new Error(t("请等待当前操作完成"));
       this.historyBusy = true;
       try {
-      if (await confirm(t("清空全部 AI 聊天记录与附件？已保存的速记和待办会保留。"), { title: t("清空 AI 历史"), kind: 'warning' })) {
+      if (await confirm(t("清空全部 AI 聊天记录与附件？已保存的速记和待办会保留。"), { title: t("清空 AI 历史"), kind: 'warning', okLabel: t("清空"), destructive: true })) {
         this.draftTimers.forEach(timer => clearTimeout(timer)); this.draftTimers.clear();
         await Promise.allSettled([...this.saves.values()]);
-        await invoke('ai_delete_session', { id: null }); this.sessions = []; this.current = '';
+        await invoke('ai_delete_session', { id: null }); await this.workspace.clearHistory(); this.sessions = []; this.current = '';
         this.saves.clear();
       }
       } finally { this.historyBusy = false; }
     }
     else if (action === 'ai-test') {
       if (this.configBusy) return true;
-      await this.saveConfig(); this.configBusy = true; this.changed();
-      try { await invoke('ai_generate', { requestId: uid(), profileId: this.config.id, messages: [{ role: 'user', content: '请仅回复：连接成功' }], onDelta: new Channel<string>() }); this.configNotice = t("连接测试成功（图片能力需用实际截图验证）"); this.toast(this.configNotice); }
-      catch (e) { this.configError = errorText(e); }
-      finally { this.configBusy = false; }
+      await this.testConnection();
     }
     else if (action === 'ai-clear-key') {
       this.configAvailable();
@@ -485,7 +591,7 @@ export class Ai {
         let target = this.source(key);
         if (!target || target.source?.original !== note.content) target = this.create(t("速记 · {0}", [note.content.slice(0, 14)]), { key, noteId: note.id, original: note.content });
         const attachment = { id: uid(), name: t("速记原文"), text: note.content };
-        if (button.dataset.kind === '3') { this.current = target.id; if (!target.messages.length) this.attach(target, attachment); await this.persist(target); this.navigate(); }
+        if (button.dataset.kind === '3') { this.legacyView = true; this.current = target.id; if (!target.messages.length) this.attach(target, attachment); await this.persist(target); this.navigate(); }
         else { target.tasks = undefined; await this.send(target, [ '整理这段速记，改善结构、保留原意，不虚构信息，结果不超过 2000 字。', '提炼这段速记的摘要与重点，结果不超过 2000 字。', taskPrompt ][Number(button.dataset.kind)], [attachment], button.dataset.kind === '2'); }
       } finally { this.operations.delete(key); this.changed(); }
     }
@@ -496,7 +602,7 @@ export class Ai {
         let target = this.source(`image:${path}`);
         if (!target) target = this.create(t("截图分析"), { key: `image:${path}` });
         const attachment = target.messages.flatMap(m => m.attachments ?? []).find(a => a.image) ?? await this.image(path);
-        if (button.dataset.kind === '3') { this.current = target.id; if (!target.messages.length) this.attach(target, attachment); await this.persist(target); this.navigate(); }
+        if (button.dataset.kind === '3') { this.legacyView = true; this.current = target.id; if (!target.messages.length) this.attach(target, attachment); await this.persist(target); this.navigate(); }
         else await this.send(target, ['请解释这张截图。若包含报错，说明可能原因与排查步骤；不确定的地方请说明。', `请把截图中的文字翻译成${this.savedConfig.language}，尽量保留段落和对应关系。辨认不清处请标注。`, '请提取截图中的文字，保留段落和换行。无法辨认的位置用 [无法辨认] 标注，不要编造。'][Number(button.dataset.kind)], [attachment]);
       } finally { this.operations.delete(path); this.changed(); }
     }

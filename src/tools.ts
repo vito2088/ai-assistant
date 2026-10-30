@@ -2,7 +2,8 @@ import { t, h, getLocale } from './i18n';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { save, open, confirm } from '@tauri-apps/plugin-dialog';
+import { save, open } from '@tauri-apps/plugin-dialog';
+import { confirm } from './app-dialog';
 import { join } from '@tauri-apps/api/path';
 import { calculate } from './calculator';
 import { TimeTools } from './time-tools';
@@ -173,11 +174,13 @@ export class Tools {
 
   showHome() { this.timeTools.close(); this.section = null; this.error = ''; }
 
-  settingsView() {
+  settingsView(kind?: CaptureKind) {
     const translateSetting = `<div class="capture-auto-ocr"><div><strong>${h('截图后自动显示译文')} <span class="settings-ai-badge" title="${h('需要 AI 模型')}">AI</span></strong><p class="tool-hint">${h('开启后自动翻译并显示译文，不会连带打开识别原文；关闭后可点击工具栏的「翻译」。仅发送识别文字，中文译英文、英文译中文，需启用 AI 并选中模型。')}</p></div><label class="switch"><input type="checkbox" id="capture-auto-translate" aria-label="${h('截图后自动显示译文')}" ${this.preferences.autoTranslate ? 'checked' : ''}><span></span></label></div>`;
     const ocrSetting = `<div class="capture-auto-ocr"><div><strong>${h('截图后自动显示识别文字')}</strong><p class="tool-hint">${h('开启后自动显示识别原文，可在面板内点击「翻译」。关闭后，通过工具栏的「识别文字」手动打开。')}</p></div><label class="switch"><input type="checkbox" id="capture-auto-ocr" aria-label="${h('截图后自动显示识别文字')}" ${this.preferences.autoOcr ? 'checked' : ''}><span></span></label></div>`;
     const directory = (kind: CaptureKind) => `<label class="tool-field">${h("{0}默认保存目录", [kind === 'screenshot' ? t("截图") : t("录屏")])}<div class="capture-directory"><input readonly aria-label="${h("{0}默认保存目录", [kind === 'screenshot' ? t("截图") : t("录屏")])}" value="${esc(this.preferences[`${kind}Directory`])}" title="${esc(this.preferences[`${kind}Directory`] || t("每次选择保存位置"))}" placeholder="${h("每次选择保存位置")}"><button class="capture-icon-button directory-browse" data-action="tool-directory" data-kind="${kind}" title="${h("选择保存目录")}" aria-label="${h("选择保存目录")}">${captureIcon('folder')}</button><button class="capture-icon-button" data-action="tool-directory-clear" data-kind="${kind}" title="${h("恢复系统默认目录")}" aria-label="${h("恢复系统默认目录")}" ${this.preferences[`${kind}Directory`] ? '' : 'disabled'}>${captureIcon('clear')}</button></div></label>`;
-    return `<section class="capture-settings" id="capture-settings-screenshot" tabindex="-1" aria-labelledby="screenshot-settings-title"><strong id="screenshot-settings-title">${h("截图设置")}</strong><p class="tool-hint">${h("完成后再选择保存位置；取消保存会保留在待保存列表。")}</p>${directory('screenshot')}${ocrSetting}${translateSetting}</section><section class="capture-settings" id="capture-settings-recording" tabindex="-1" aria-labelledby="recording-settings-title"><strong id="recording-settings-title">${h("录屏设置")}</strong><p class="tool-hint">${h("完成后再选择保存位置；取消保存会保留在待保存列表。")}</p>${directory('recording')}<div class="capture-settings-row"><label class="tool-field">${h("录屏倒计时")}<select id="capture-countdown">${[0,3,5,10].map(n => `<option value="${n}" ${this.preferences.countdown === n ? 'selected' : ''}>${n === 0 ? t("关闭") : t("{0} 秒", [n])}</option>`).join('')}</select></label><label class="tool-field">${h("录屏帧率")}<select id="capture-fps">${[15,30,60].map(n => `<option value="${n}" ${this.preferences.fps === n ? 'selected' : ''}>${n} FPS</option>`).join('')}</select></label></div><label class="tool-checkbox"><input type="checkbox" id="capture-cursor" ${this.preferences.cursor ? 'checked' : ''}>${h("录屏显示鼠标指针（Windows）")}</label></section>`;
+    const screenshot = `<section class="capture-settings" id="capture-settings-screenshot" tabindex="-1" aria-labelledby="screenshot-settings-title"><strong id="screenshot-settings-title">${h("截图设置")}</strong><p class="tool-hint">${h("完成后再选择保存位置；取消保存会保留在待保存列表。")}</p>${directory('screenshot')}${ocrSetting}${translateSetting}</section>`;
+    const recording = `<section class="capture-settings" id="capture-settings-recording" tabindex="-1" aria-labelledby="recording-settings-title"><strong id="recording-settings-title">${h("录屏设置")}</strong><p class="tool-hint">${h("完成后再选择保存位置；取消保存会保留在待保存列表。")}</p>${directory('recording')}<div class="capture-settings-row"><label class="tool-field">${h("录屏倒计时")}<select id="capture-countdown">${[0,3,5,10].map(n => `<option value="${n}" ${this.preferences.countdown === n ? 'selected' : ''}>${n === 0 ? t("关闭") : t("{0} 秒", [n])}</option>`).join('')}</select></label><label class="tool-field">${h("录屏帧率")}<select id="capture-fps">${[15,30,60].map(n => `<option value="${n}" ${this.preferences.fps === n ? 'selected' : ''}>${n} FPS</option>`).join('')}</select></label></div><label class="tool-checkbox"><input type="checkbox" id="capture-cursor" ${this.preferences.cursor ? 'checked' : ''}>${h("录屏显示鼠标指针（Windows）")}</label></section>`;
+    return kind === 'screenshot' ? screenshot : kind === 'recording' ? recording : screenshot + recording;
   }
 
   private report(error: unknown) { this.error = message(error); this.toast(this.error); this.changed(); }
@@ -247,7 +250,7 @@ export class Tools {
     else if (action === 'tool-save-draft' && button.dataset.path) await this.saveDraft(button.dataset.path);
     else if (action === 'tool-preview-draft' && button.dataset.path) { this.previewDraft = this.previewDraft === button.dataset.path ? '' : button.dataset.path; this.changed(); }
     else if (action === 'tool-delete-draft' && button.dataset.path) {
-      if (await confirm(t("删除这份未保存的截图或录屏？此操作无法撤销。"), { title: t("删除草稿"), kind: 'warning' })) { await invoke('delete_capture_draft', { path: button.dataset.path }); await this.refreshDrafts(); }
+      if (await confirm(t("删除这份未保存的截图或录屏？此操作无法撤销。"), { title: t("删除草稿"), kind: 'warning', okLabel: t('删除'), destructive: true })) { await invoke('delete_capture_draft', { path: button.dataset.path }); await this.refreshDrafts(); }
     }
     else if (action === 'tool-pause-recording') await this.pauseRecording();
     else if (action === 'tool-start-recording') await this.startRecording();

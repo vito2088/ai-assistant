@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { t, h } from './i18n';
+import { confirm } from './app-dialog';
 
 export type SettingsDocument = { path: string; content: string; defaults: string; error: string | null };
 
@@ -17,7 +18,7 @@ export async function openSettingsEditor(onSaved: () => Promise<void>) {
   const status = dialog.querySelector<HTMLElement>('.json-validation')!;
   const save = dialog.querySelector<HTMLButtonElement>('[data-json-save]')!;
   input.value = file.content;
-  let expected = file.content, revision = 0, valid = false, saving = false, timer: number | undefined;
+  let expected = file.content, revision = 0, valid = false, saving = false, closing = false, timer: number | undefined;
   function report(error: unknown) { status.textContent = String(error); status.classList.add('invalid'); }
   async function validate() {
     const version = ++revision;
@@ -34,13 +35,16 @@ export async function openSettingsEditor(onSaved: () => Promise<void>) {
     ++revision; valid = false; save.disabled = true; clearTimeout(timer);
     timer = window.setTimeout(() => { void validate(); }, 250);
   });
-  function close() {
-    if (saving) return;
-    if (input.value !== expected && !confirm(t('JSON 修改尚未保存，确定关闭吗？'))) return;
-    ++revision; clearTimeout(timer); dialog.close(); dialog.remove();
+  async function close() {
+    if (saving || closing) return;
+    closing = true;
+    try {
+      if (input.value !== expected && !await confirm(t('JSON 修改尚未保存，确定关闭吗？'), { kind: 'warning', okLabel: t('放弃修改'), destructive: true })) return;
+      ++revision; clearTimeout(timer); dialog.close(); dialog.remove();
+    } finally { closing = false; }
   }
-  dialog.querySelector('[data-json-close]')!.addEventListener('click', close);
-  dialog.addEventListener('cancel', e => { e.preventDefault(); close(); });
+  dialog.querySelector('[data-json-close]')!.addEventListener('click', () => { void close(); });
+  dialog.addEventListener('cancel', e => { e.preventDefault(); void close(); });
   dialog.querySelector('[data-json-format]')!.addEventListener('click', () => {
     if (saving) return;
     try { input.value = JSON.stringify(JSON.parse(input.value), null, 2) + '\n'; void validate(); } catch (error) { valid = false; save.disabled = true; report(error); }

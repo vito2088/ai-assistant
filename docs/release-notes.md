@@ -13,7 +13,7 @@
 | macOS Intel | `my-assistant_0.2.0_macos_x64.dmg` |
 | Linux x64 | `my-assistant_0.2.0_linux_x86_64.AppImage` 或 `.deb` |
 
-附件提供 `SHA256SUMS.txt` 校验清单。Gitee 同步相同安装包，GitHub 发布完成后即可先行下载。
+附件提供 `SHA256SUMS.txt` 校验清单。安装包仅在 [GitHub Releases](https://github.com/vito2088/ai-assistant/releases/latest) 提供，Gitee 仓库仅同步源码。
 
 ## 本版更新
 

@@ -13,7 +13,7 @@
     "windows": [{
       "label": "main",
       "title": "桌面小助手",
-      "width": 430,
+      "width": 880,
       "height": 620,
       "minWidth": 70,
       "minHeight": 70,

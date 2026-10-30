@@ -1,37 +1,58 @@
+#[cfg(all(test, windows, target_env = "msvc"))]
+mod test_manifest;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
-mod tools;
+mod ai;
+mod ai_agent;
+mod ai_bridge;
+mod ai_cli;
+mod ai_desktop;
+mod ai_files;
+mod ai_tools;
+mod ai_workspace;
+mod capture_workspace;
 #[cfg(windows)]
 mod desktop_snapshot;
-mod reminders;
-mod capture_workspace;
 #[cfg(windows)]
 mod native_capture;
 #[cfg(windows)]
-mod native_editor;
+mod native_capture_service;
 #[cfg(windows)]
-mod native_icons;
+mod native_editor;
 #[cfg(windows)]
 mod native_icon_data;
 #[cfg(windows)]
-mod native_capture_service;
+mod native_icons;
+mod reminders;
+mod tools;
+mod terminal;
 mod window_recovery;
-mod ai;
+pub use ai_bridge::run_stdio_bridge;
 mod settings_file;
 static TRAY_RECORDING: AtomicBool = AtomicBool::new(false);
 fn tray_labels(locale: &str) -> [&'static str; 4] {
     match locale {
-        "en" => ["Show Assistant", "Quit", "Stop recording and preview", "Desktop Assistant"],
-        "es" => ["Mostrar asistente", "Salir", "Detener y previsualizar", "Asistente de escritorio"],
+        "en" => [
+            "Show Assistant",
+            "Quit",
+            "Stop recording and preview",
+            "Desktop Assistant",
+        ],
+        "es" => [
+            "Mostrar asistente",
+            "Salir",
+            "Detener y previsualizar",
+            "Asistente de escritorio",
+        ],
         _ => ["显示小助手", "退出", "结束录屏并预览", "桌面小助手"],
     }
 }
@@ -41,14 +62,25 @@ fn set_tray_recording(app: AppHandle, active: bool) -> Result<(), String> {
     TRAY_RECORDING.store(active, Ordering::Relaxed);
     let locale = get_setting(app.clone(), "ui_language".into())?.unwrap_or_default();
     let labels = tray_labels(&locale);
-    if let Some(window) = app.get_webview_window("main") { let _ = window.set_title(labels[3]); }
-    let show = MenuItem::with_id(&app, "show", labels[0], true, None::<&str>).map_err(|e| e.to_string())?;
-    let quit = MenuItem::with_id(&app, "quit", labels[1], true, None::<&str>).map_err(|e| e.to_string())?;
-    let stop = MenuItem::with_id(&app, "stop-recording", labels[2], true, None::<&str>).map_err(|e| e.to_string())?;
-    let menu = if active { Menu::with_items(&app, &[&show, &stop, &quit]) } else { Menu::with_items(&app, &[&show, &quit]) }.map_err(|e| e.to_string())?;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_title(labels[3]);
+    }
+    let show = MenuItem::with_id(&app, "show", labels[0], true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(&app, "quit", labels[1], true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let stop = MenuItem::with_id(&app, "stop-recording", labels[2], true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let menu = if active {
+        Menu::with_items(&app, &[&show, &stop, &quit])
+    } else {
+        Menu::with_items(&app, &[&show, &quit])
+    }
+    .map_err(|e| e.to_string())?;
     if let Some(tray) = app.tray_by_id("assistant") {
         tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
-        tray.set_tooltip(Some(labels[3])).map_err(|e| e.to_string())?;
+        tray.set_tooltip(Some(labels[3]))
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -61,7 +93,11 @@ fn restore_main_position(app: AppHandle, x: Option<i32>, y: Option<i32>) -> Resu
 #[tauri::command]
 fn persist_main_position(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
     let window = app.get_webview_window("main").ok_or("小助手窗口不存在")?;
-    if window.is_minimized().map_err(|e| e.to_string())? || !window_recovery::position_reachable(&window, x, y)? { return Ok(()); }
+    if window.is_minimized().map_err(|e| e.to_string())?
+        || !window_recovery::position_reachable(&window, x, y)?
+    {
+        return Ok(());
+    }
     let mut conn = db(&app)?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
     for (key, value) in [("window_x", x), ("window_y", y)] {
@@ -71,8 +107,25 @@ fn persist_main_position(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
 }
 
 fn show_from_tray(app: &AppHandle) {
-    if let Err(error) = window_recovery::show(app) { eprintln!("恢复小助手失败：{error}"); }
+    if let Err(error) = window_recovery::show(app) {
+        eprintln!("恢复小助手失败：{error}");
+    }
     let _ = app.emit("assistant-show", ());
+}
+
+#[tauri::command]
+fn open_project_repository() -> Result<(), String> {
+    #[cfg(windows)]
+    let mut command = Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let mut command = Command::new("xdg-open");
+    command
+        .arg("https://github.com/vito2088/ai-assistant")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 static DATABASE_READY: OnceLock<Result<(), String>> = OnceLock::new();
@@ -129,7 +182,9 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     let mut conn = Connection::open(dir.join("assistant.db")).map_err(|e| e.to_string())?;
     conn.busy_timeout(std::time::Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
-    DATABASE_READY.get_or_init(|| initialize_schema(&mut conn)).clone()?;
+    DATABASE_READY
+        .get_or_init(|| initialize_schema(&mut conn))
+        .clone()?;
     Ok(conn)
 }
 
@@ -165,31 +220,66 @@ fn initialize_schema(conn: &mut Connection) -> Result<(), String> {
         );",
     )
     .map_err(|e| e.to_string())?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let current: Option<String> = tx
-        .query_row("SELECT computer_id FROM local_binding WHERE singleton=1", [], |r| r.get(0))
-        .optional().map_err(|e| e.to_string())?;
-    let current_id = if let Some(id) = current { id } else {
+        .query_row(
+            "SELECT computer_id FROM local_binding WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let current_id = if let Some(id) = current {
+        id
+    } else {
         let id = Uuid::new_v4().to_string();
-        let name = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME"))
-            .ok().filter(|name| !name.trim().is_empty()).unwrap_or_else(|| "这台电脑".into());
-        let platform = if cfg!(target_os = "windows") { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" };
+        let name = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "这台电脑".into());
+        let platform = if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
         tx.execute("INSERT INTO computer_profiles(id,name,platform,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)",
             params![id, name, platform, now_ms()]).map_err(|e| e.to_string())?;
-        tx.execute("INSERT INTO local_binding(singleton,installation_id,computer_id) VALUES(1,?1,?2)",
-            params![Uuid::new_v4().to_string(), id]).map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO local_binding(singleton,installation_id,computer_id) VALUES(1,?1,?2)",
+            params![Uuid::new_v4().to_string(), id],
+        )
+        .map_err(|e| e.to_string())?;
         id
     };
-    let legacy_exists: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='launchers')", [], |r| r.get(0)
-    ).map_err(|e| e.to_string())?;
+    let legacy_exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='launchers')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
     let has_computer_id = if legacy_exists {
-        let mut stmt = tx.prepare("PRAGMA table_info(launchers)").map_err(|e| e.to_string())?;
-        let columns = stmt.query_map([], |r| r.get::<_, String>(1)).map_err(|e| e.to_string())?;
-        columns.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?.contains(&"computer_id".to_string())
-    } else { false };
+        let mut stmt = tx
+            .prepare("PRAGMA table_info(launchers)")
+            .map_err(|e| e.to_string())?;
+        let columns = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .map_err(|e| e.to_string())?;
+        columns
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+            .contains(&"computer_id".to_string())
+    } else {
+        false
+    };
     if legacy_exists && !has_computer_id {
-        tx.execute_batch("ALTER TABLE launchers RENAME TO launchers_legacy;").map_err(|e| e.to_string())?;
+        tx.execute_batch("ALTER TABLE launchers RENAME TO launchers_legacy;")
+            .map_err(|e| e.to_string())?;
     }
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS launchers (
@@ -209,10 +299,24 @@ fn initialize_schema(conn: &mut Connection) -> Result<(), String> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_launchers_active_target ON launchers(computer_id,kind,target) WHERE deleted_at IS NULL;"
     ).map_err(|e| e.to_string())?;
     if legacy_exists && !has_computer_id {
-        let mut stmt = tx.prepare("SELECT id,kind,name,target,editor,last_opened_at FROM launchers_legacy").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<i64>>(5)?)))
+        let mut stmt = tx
+            .prepare("SELECT id,kind,name,target,editor,last_opened_at FROM launchers_legacy")
             .map_err(|e| e.to_string())?;
-        let legacy = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let legacy = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
         drop(stmt);
         for (id, kind, name, target, editor, last_opened_at) in legacy {
             let kind = if kind == "software" { "app" } else { "project" };
@@ -220,7 +324,8 @@ fn initialize_schema(conn: &mut Connection) -> Result<(), String> {
                 params![id, Uuid::new_v4().to_string(), current_id, kind, name, target, editor, last_opened_at, now_ms()])
                 .map_err(|e| e.to_string())?;
         }
-        tx.execute_batch("DROP TABLE launchers_legacy;").map_err(|e| e.to_string())?;
+        tx.execute_batch("DROP TABLE launchers_legacy;")
+            .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -242,7 +347,8 @@ fn list_todos(app: AppHandle) -> Result<Vec<Todo>, String> {
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -253,8 +359,11 @@ fn add_todo(app: AppHandle, text: String) -> Result<Todo, String> {
     }
     let conn = db(&app)?;
     let created_at = now_ms();
-    conn.execute("INSERT INTO todos(text, created_at) VALUES(?1, ?2)", params![text, created_at])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO todos(text, created_at) VALUES(?1, ?2)",
+        params![text, created_at],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(Todo {
         id: conn.last_insert_rowid(),
         text: text.to_string(),
@@ -266,7 +375,10 @@ fn add_todo(app: AppHandle, text: String) -> Result<Todo, String> {
 #[tauri::command]
 fn set_todo_completed(app: AppHandle, id: i64, completed: bool) -> Result<(), String> {
     db(&app)?
-        .execute("UPDATE todos SET completed=?1 WHERE id=?2", params![completed as i64, id])
+        .execute(
+            "UPDATE todos SET completed=?1 WHERE id=?2",
+            params![completed as i64, id],
+        )
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -295,7 +407,8 @@ fn list_notes(app: AppHandle) -> Result<Vec<Note>, String> {
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -349,8 +462,12 @@ fn delete_note(app: AppHandle, id: i64) -> Result<(), String> {
 }
 
 fn current_computer_id(conn: &Connection) -> Result<String, String> {
-    conn.query_row("SELECT computer_id FROM local_binding WHERE singleton=1", [], |r| r.get(0))
-        .map_err(|e| e.to_string())
+    conn.query_row(
+        "SELECT computer_id FROM local_binding WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -359,49 +476,85 @@ fn list_computers(app: AppHandle) -> Result<Vec<ComputerProfile>, String> {
     let current_id = current_computer_id(&conn)?;
     let mut stmt = conn.prepare("SELECT id,name,platform FROM computer_profiles ORDER BY CASE WHEN id=?1 THEN 0 ELSE 1 END, created_at, name")
         .map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([&current_id], |r| {
-        let id: String = r.get(0)?;
-        Ok(ComputerProfile { is_current: id == current_id, id, name: r.get(1)?, platform: r.get(2)? })
-    }).map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    let rows = stmt
+        .query_map([&current_id], |r| {
+            let id: String = r.get(0)?;
+            Ok(ComputerProfile {
+                is_current: id == current_id,
+                id,
+                name: r.get(1)?,
+                platform: r.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn add_computer(app: AppHandle, name: String, platform: String) -> Result<ComputerProfile, String> {
     let name = name.trim();
-    if name.is_empty() || name.chars().count() > 80 { return Err("电脑名称需要在 1～80 个字符之间".into()); }
-    if !["windows", "macos", "linux"].contains(&platform.as_str()) { return Err("请选择电脑系统".into()); }
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("电脑名称需要在 1～80 个字符之间".into());
+    }
+    if !["windows", "macos", "linux"].contains(&platform.as_str()) {
+        return Err("请选择电脑系统".into());
+    }
     let conn = db(&app)?;
     let id = Uuid::new_v4().to_string();
     conn.execute("INSERT INTO computer_profiles(id,name,platform,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)",
         params![id, name, platform, now_ms()]).map_err(|e| e.to_string())?;
-    Ok(ComputerProfile { id, name: name.into(), platform, is_current: false })
+    Ok(ComputerProfile {
+        id,
+        name: name.into(),
+        platform,
+        is_current: false,
+    })
 }
 
 #[tauri::command]
 fn rename_computer(app: AppHandle, id: String, name: String) -> Result<(), String> {
     let name = name.trim();
-    if name.is_empty() || name.chars().count() > 80 { return Err("电脑名称需要在 1～80 个字符之间".into()); }
-    let changed = db(&app)?.execute("UPDATE computer_profiles SET name=?1,updated_at=?2 WHERE id=?3", params![name, now_ms(), id])
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("电脑名称需要在 1～80 个字符之间".into());
+    }
+    let changed = db(&app)?
+        .execute(
+            "UPDATE computer_profiles SET name=?1,updated_at=?2 WHERE id=?3",
+            params![name, now_ms(), id],
+        )
         .map_err(|e| e.to_string())?;
-    if changed == 0 { return Err("电脑档案不存在".into()); }
+    if changed == 0 {
+        return Err("电脑档案不存在".into());
+    }
     Ok(())
 }
 
 #[tauri::command]
 fn delete_computer(app: AppHandle, id: String) -> Result<(), String> {
     let mut conn = db(&app)?;
-    if current_computer_id(&conn)? == id { return Err("不能删除当前电脑，请先在这台电脑上解绑".into()); }
+    if current_computer_id(&conn)? == id {
+        return Err("不能删除当前电脑，请先在这台电脑上解绑".into());
+    }
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM launchers WHERE computer_id=?1", [&id]).map_err(|e| e.to_string())?;
-    let changed = tx.execute("DELETE FROM computer_profiles WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
-    if changed == 0 { return Err("电脑档案不存在".into()); }
+    tx.execute("DELETE FROM launchers WHERE computer_id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    let changed = tx
+        .execute("DELETE FROM computer_profiles WHERE id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("电脑档案不存在".into());
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-fn list_launchers(app: AppHandle, kind: String, computer_id: String) -> Result<Vec<Launcher>, String> {
+fn list_launchers(
+    app: AppHandle,
+    kind: String,
+    computer_id: String,
+) -> Result<Vec<Launcher>, String> {
     if kind != "project" && kind != "app" {
         return Err("未知的入口类型".into());
     }
@@ -422,7 +575,8 @@ fn list_launchers(app: AppHandle, kind: String, computer_id: String) -> Result<V
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -444,7 +598,8 @@ fn save_launcher(
         return Err("请填写有效名称和路径".into());
     }
     let path = Path::new(target);
-    if (kind == "project" && !path.is_dir()) || (kind == "app" && !path.is_file() && !path.is_dir()) {
+    if (kind == "project" && !path.is_dir()) || (kind == "app" && !path.is_file() && !path.is_dir())
+    {
         return Err("所选项目或软件地址不存在".into());
     }
     if kind == "project" {
@@ -454,7 +609,9 @@ fn save_launcher(
         }
     }
     let conn = db(&app)?;
-    if current_computer_id(&conn)? != computer_id { return Err("只能编辑当前电脑的入口".into()); }
+    if current_computer_id(&conn)? != computer_id {
+        return Err("只能编辑当前电脑的入口".into());
+    }
     let result = if let Some(id) = id {
         conn.execute(
             "UPDATE launchers SET name=?1, target=?2, editor=?3,updated_at=?4 WHERE id=?5 AND kind=?6 AND computer_id=?7 AND deleted_at IS NULL",
@@ -473,7 +630,9 @@ fn save_launcher(
             e.to_string()
         }
     })?;
-    if changed == 0 { return Err("入口不存在或不属于当前电脑".into()); }
+    if changed == 0 {
+        return Err("入口不存在或不属于当前电脑".into());
+    }
     Ok(())
 }
 
@@ -483,7 +642,9 @@ fn delete_launcher(app: AppHandle, id: i64) -> Result<(), String> {
     let current_id = current_computer_id(&conn)?;
     let changed = conn.execute("UPDATE launchers SET deleted_at=?1,updated_at=?1 WHERE id=?2 AND computer_id=?3 AND deleted_at IS NULL", params![now_ms(), id, current_id])
         .map_err(|e| e.to_string())?;
-    if changed == 0 { return Err("入口不存在或不属于当前电脑".into()); }
+    if changed == 0 {
+        return Err("入口不存在或不属于当前电脑".into());
+    }
     Ok(())
 }
 
@@ -499,7 +660,9 @@ fn launch_entry(app: AppHandle, id: i64) -> Result<(), String> {
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or("入口不存在")?;
-    if current_computer_id(&conn)? != computer_id { return Err("只能在所属电脑上打开此入口".into()); }
+    if current_computer_id(&conn)? != computer_id {
+        return Err("只能在所属电脑上打开此入口".into());
+    }
     if !Path::new(&target).exists() {
         return Err("地址已失效，请编辑后重试".into());
     }
@@ -520,7 +683,9 @@ fn launch_entry(app: AppHandle, id: i64) -> Result<(), String> {
             c.arg(&target);
             c
         };
-        command.spawn().map_err(|e| format!("编辑器启动失败：{e}"))?;
+        command
+            .spawn()
+            .map_err(|e| format!("编辑器启动失败：{e}"))?;
     } else {
         #[cfg(target_os = "macos")]
         let mut command = {
@@ -532,8 +697,11 @@ fn launch_entry(app: AppHandle, id: i64) -> Result<(), String> {
         let mut command = Command::new(&target);
         command.spawn().map_err(|e| format!("应用启动失败：{e}"))?;
     }
-    conn.execute("UPDATE launchers SET last_opened_at=?1 WHERE id=?2", params![now_ms(), id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE launchers SET last_opened_at=?1 WHERE id=?2",
+        params![now_ms(), id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -546,12 +714,31 @@ fn get_setting(app: AppHandle, key: String) -> Result<Option<String>, String> {
 fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String> {
     validate_public_setting(&key, &value)?;
     store_setting(&db(&app)?, &key, &value)?;
-    if key == "ui_language" { let _ = set_tray_recording(app, TRAY_RECORDING.load(Ordering::Relaxed)); }
+    if key == "ui_language" {
+        let _ = set_tray_recording(app, TRAY_RECORDING.load(Ordering::Relaxed));
+    }
     Ok(())
 }
 
 fn validate_public_setting(key: &str, value: &str) -> Result<(), String> {
-    if !["ui_language", "feature_order", "feature_visibility", "capture_preferences", "capture_shortcuts", "autostart", "mode", "page", "document_section", "workbench_section", "selected_computer_id", "pinned", "window_x", "window_y"].contains(&key) {
+    if ![
+        "ui_language",
+        "feature_order",
+        "feature_visibility",
+        "capture_preferences",
+        "capture_shortcuts",
+        "autostart",
+        "mode",
+        "page",
+        "document_section",
+        "workbench_section",
+        "selected_computer_id",
+        "pinned",
+        "window_x",
+        "window_y",
+    ]
+    .contains(&key)
+    {
         return Err(format!("设置项「{key}」不支持通过通用设置接口保存"));
     }
     if key == "ui_language" && !["zh-CN", "en", "es"].contains(&value) {
@@ -569,7 +756,11 @@ fn store_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String
 #[tauri::command]
 async fn quit_app(app: AppHandle) -> Result<(), String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || tools::stop_recording(&handle)).await.map_err(|e| e.to_string())??;
+    tauri::async_runtime::spawn_blocking(move || tools::stop_recording(&handle))
+        .await
+        .map_err(|e| e.to_string())??;
+    ai_workspace::stop_all().await;
+    terminal::stop_all().await;
     app.exit(0);
     Ok(())
 }
@@ -578,30 +769,52 @@ pub fn run() {
     tauri::Builder::default()
         .manage(tools::ToolState::default())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app,key,event|{
-            #[cfg(windows)] native_capture_service::shortcut(app,key,event);
-            #[cfg(not(windows))] let _=(app,key,event);
-        }).build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, key, event| {
+                    #[cfg(windows)]
+                    native_capture_service::shortcut(app, key, event);
+                    #[cfg(not(windows))]
+                    let _ = (app, key, event);
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .setup(|app| {
-            #[cfg(windows)] app.manage(native_capture_service::Service::default());
+            #[cfg(windows)]
+            app.manage(native_capture_service::Service::default());
             reminders::start(app.handle().clone()).map_err(std::io::Error::other)?;
-            #[cfg(windows)] native_capture_service::sync_shortcuts(app.handle()).map_err(std::io::Error::other)?;
+            #[cfg(windows)]
+            native_capture_service::sync_shortcuts(app.handle()).map_err(std::io::Error::other)?;
             let show = MenuItem::with_id(app, "show", "显示小助手", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
-            let mut tray = TrayIconBuilder::with_id("assistant").menu(&menu).show_menu_on_left_click(false).tooltip("桌面小助手");
+            let mut tray = TrayIconBuilder::with_id("assistant")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .tooltip("桌面小助手");
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
             tray.on_tray_icon_event(|tray, event| {
-                if matches!(event, TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }) {
+                if matches!(
+                    event,
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } | TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    }
+                ) {
                     show_from_tray(tray.app_handle());
                 }
-            }).on_menu_event(|app, event| match event.id.as_ref() {
+            })
+            .on_menu_event(|app, event| match event.id.as_ref() {
                 "show" => {
                     show_from_tray(app);
                 }
@@ -619,16 +832,44 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             #[cfg(windows)]
-            if window.label()=="main"&&matches!(event,tauri::WindowEvent::Focused(false)){native_capture_service::edit_shortcut(window.app_handle(),None);}
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(false)) {
+                native_capture_service::edit_shortcut(window.app_handle(), None);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label().starts_with("capture-pin-") { return; }
+                if window.label().starts_with("capture-pin-") {
+                    return;
+                }
                 api.prevent_close();
-                if window.label() == "reminder-alert" { let _ = window.emit("reminder-dismiss", ()); return; }
-                if window.label() == "system-capture" { capture_workspace::cancel_on_close(window.app_handle()); return; }
+                if window.label() == "reminder-alert" {
+                    let _ = window.emit("reminder-dismiss", ());
+                    return;
+                }
+                if window.label() == "system-capture" {
+                    capture_workspace::cancel_on_close(window.app_handle());
+                    return;
+                }
                 let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![
+            terminal::terminal_load,
+            terminal::terminal_save_profile,
+            terminal::terminal_delete_profile,
+            terminal::terminal_forget_secret,
+            terminal::terminal_save_preferences,
+            terminal::terminal_open,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_ack,
+            terminal::terminal_close,
+            terminal::ssh::terminal_probe_host,
+            terminal::ssh::terminal_trust_host,
+            terminal::files::terminal_file_action,
+            terminal::files::terminal_transfer,
+            terminal::files::terminal_cancel_transfer,
+            terminal::ai::terminal_ai_run,
+            terminal::ai::terminal_ai_cancel,
+            terminal::ai::terminal_ai_approve,
             reminders::timed_tasks,
             reminders::add_timed_task,
             reminders::update_timed_task,
@@ -642,10 +883,21 @@ pub fn run() {
             settings_file::open_settings_external,
             ai::ai_settings,
             ai::ai_list_models,
+            ai::connection::ai_test_connection,
             ai::ai_save_settings,
             ai::ai_select_model,
             ai::ai_delete_model,
             ai::ai_generate,
+            ai_workspace::ai_workspace_load,
+            ai_workspace::ai_workspace_save_contact,
+            ai_workspace::ai_workspace_save_conversation,
+            ai_workspace::ai_workspace_delete,
+            ai_workspace::ai_workspace_run,
+            ai_workspace::ai_workspace_cancel,
+            ai_workspace::ai_workspace_approve,
+            ai_cli::ai_cli_detect,
+            ai_cli::ai_cli_install,
+            ai_cli::ai_cli_open,
             ai::ai_cancel,
             ai::ai_sessions,
             ai::ai_save_session,
@@ -668,6 +920,7 @@ pub fn run() {
             save_launcher,
             delete_launcher,
             launch_entry,
+            open_project_repository,
             get_setting,
             set_setting,
             set_tray_recording,
@@ -718,11 +971,19 @@ mod tests {
     fn capture_shortcuts_can_be_saved_and_read_back() {
         let mut conn = Connection::open_in_memory().unwrap();
         initialize_schema(&mut conn).unwrap();
-        for value in [r#"{"screenshot":"Ctrl+Shift+KeyS","recording":"Ctrl+Alt+KeyR"}"#,
-                      r#"{"screenshot":"","recording":""}"#] {
+        for value in [
+            r#"{"screenshot":"Ctrl+Shift+KeyS","recording":"Ctrl+Alt+KeyR"}"#,
+            r#"{"screenshot":"","recording":""}"#,
+        ] {
             validate_public_setting("capture_shortcuts", value).unwrap();
             store_setting(&conn, "capture_shortcuts", value).unwrap();
-            let saved: String = conn.query_row("SELECT value FROM settings WHERE key='capture_shortcuts'", [], |r| r.get(0)).unwrap();
+            let saved: String = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key='capture_shortcuts'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(saved, value);
         }
         assert!(validate_public_setting("ai_config_v2", "{}").is_err());
@@ -739,13 +1000,45 @@ mod tests {
         let current = current_computer_id(&conn).unwrap();
         let rows: Vec<(i64, String, String, String, Option<String>, Option<i64>)> = {
             let mut stmt = conn.prepare("SELECT id,computer_id,kind,target,editor,last_opened_at FROM launchers ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))
-                .unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
         };
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], (7, current.clone(), "project".into(), "C:/old-project".into(), Some("C:/editor.exe".into()), Some(123)));
-        assert_eq!(rows[1], (8, current, "app".into(), "C:/old-app.exe".into(), None, Some(456)));
-        conn.execute("UPDATE launchers SET deleted_at=1 WHERE id=8", []).unwrap();
+        assert_eq!(
+            rows[0],
+            (
+                7,
+                current.clone(),
+                "project".into(),
+                "C:/old-project".into(),
+                Some("C:/editor.exe".into()),
+                Some(123)
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                8,
+                current,
+                "app".into(),
+                "C:/old-app.exe".into(),
+                None,
+                Some(456)
+            )
+        );
+        conn.execute("UPDATE launchers SET deleted_at=1 WHERE id=8", [])
+            .unwrap();
         conn.execute("INSERT INTO launchers(sync_id,computer_id,kind,name,target,created_at,updated_at) VALUES(?1,?2,'app','新应用','C:/old-app.exe',2,2)",
             params![Uuid::new_v4().to_string(), rows[1].1]).unwrap();
     }

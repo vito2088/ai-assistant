@@ -15,12 +15,12 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
-use windows::Win32::UI::Controls::{EM_SETLIMITTEXT,WM_MOUSELEAVE};
+use windows::Win32::UI::Controls::{EM_SETLIMITTEXT, WM_MOUSELEAVE};
 use windows::{
-    core::{w, HSTRING},
+    core::{w, HSTRING, PCWSTR},
     Win32::{
         Foundation::{
-            GlobalFree, COLORREF, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+            GlobalFree, COLORREF, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
         },
         Graphics::{
             Direct2D::{Common::*, *},
@@ -48,7 +48,8 @@ use windows::{
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             },
             Input::KeyboardAndMouse::{
-                GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE, VK_CONTROL, VK_SHIFT,
+                GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE,
+                TRACKMOUSEEVENT, VK_CONTROL, VK_SHIFT,
             },
             Shell::{
                 Common::COMDLG_FILTERSPEC, FileSaveDialog, IFileSaveDialog, IShellItem,
@@ -145,16 +146,37 @@ impl Action {
     }
     fn icon(self) -> &'static str {
         match self {
-            Self::Full=>"full",Self::Last=>"last",Self::Select=>"select",Self::Pen=>"pen",Self::Arrow=>"arrow",
-            Self::Rectangle=>"rectangle",Self::Ellipse=>"ellipse",Self::Text=>"text",Self::Mosaic=>"mosaic",Self::Step=>"step",
-            Self::Undo=>"undo",Self::Redo=>"redo",Self::Pin=>"pin",Self::Ocr=>"ocr",Self::Translate=>"translate",Self::Save=>"save",
-            Self::Cancel|Self::ClosePanel=>"cancel",Self::Done=>"done",Self::Pause=>"pause",Self::Stop=>"stop",
-            Self::CopyText|Self::CopyTranslation=>"copy",Self::Color|Self::Width=>"",
+            Self::Full => "full",
+            Self::Last => "last",
+            Self::Select => "select",
+            Self::Pen => "pen",
+            Self::Arrow => "arrow",
+            Self::Rectangle => "rectangle",
+            Self::Ellipse => "ellipse",
+            Self::Text => "text",
+            Self::Mosaic => "mosaic",
+            Self::Step => "step",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
+            Self::Pin => "pin",
+            Self::Ocr => "ocr",
+            Self::Translate => "translate",
+            Self::Save => "save",
+            Self::Cancel | Self::ClosePanel => "cancel",
+            Self::Done => "done",
+            Self::Pause => "pause",
+            Self::Stop => "stop",
+            Self::CopyText | Self::CopyTranslation => "copy",
+            Self::Color | Self::Width => "",
         }
     }
     fn label(self, o: &Options) -> &str {
         if self == Self::Done && o.kind == Kind::Recording {
-            return o.tr("倒计时后开始录制", "Start after countdown", "Iniciar tras la cuenta atrás");
+            return o.tr(
+                "倒计时后开始录制",
+                "Start after countdown",
+                "Iniciar tras la cuenta atrás",
+            );
         }
         let (z, e, s) = match self {
             Self::Full => ("全屏", "Full screen", "Pantalla completa"),
@@ -284,20 +306,27 @@ impl Renderer {
             .map_err(|e| e.to_string())?;
         let paper = editor::brush(&target, 0xfbfaf8)?;
         let text = editor::text_format(13.0 * scale, true)?;
-        let tint=editor::brush(&target,0xece9fb)?;
-        let accent=editor::brush(&target,0x7164d7)?;
-        let border=editor::brush(&target,0xe0ddeb)?;
-        let icons=super::native_icons::Icons::new(&factory)?;
-        let body=editor::text_format(12.0*scale,false)?;
-        let clock=editor::text_format(18.0*scale,false)?;
-        let white=editor::brush(&target,0xffffff)?;
+        let tint = editor::brush(&target, 0xece9fb)?;
+        let accent = editor::brush(&target, 0x7164d7)?;
+        let border = editor::brush(&target, 0xe0ddeb)?;
+        let icons = super::native_icons::Icons::new(&factory)?;
+        let body = editor::text_format(12.0 * scale, false)?;
+        let clock = editor::text_format(18.0 * scale, false)?;
+        let white = editor::brush(&target, 0xffffff)?;
         Ok(Self {
             target,
             bitmap,
             ink,
             mask,
             paper,
-            text, tint, accent, border, icons, body, clock, white,
+            text,
+            tint,
+            accent,
+            border,
+            icons,
+            body,
+            clock,
+            white,
         })
     }
     unsafe fn label(&self, text: &str, rect: D2D_RECT_F) {
@@ -310,52 +339,120 @@ impl Renderer {
             DWRITE_MEASURING_MODE_NATURAL,
         );
     }
-    unsafe fn caption(&self,text:&str,r:D2D_RECT_F,font:&IDWriteTextFormat,color:u32) {
+    unsafe fn caption(&self, text: &str, r: D2D_RECT_F, font: &IDWriteTextFormat, color: u32) {
         self.ink.SetColor(&editor::color(color));
-        self.target.DrawText(&text.encode_utf16().collect::<Vec<_>>(),font,&r,&self.ink,D2D1_DRAW_TEXT_OPTIONS_CLIP,DWRITE_MEASURING_MODE_NATURAL);
+        self.target.DrawText(
+            &text.encode_utf16().collect::<Vec<_>>(),
+            font,
+            &r,
+            &self.ink,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP,
+            DWRITE_MEASURING_MODE_NATURAL,
+        );
         self.ink.SetColor(&editor::color(0x71778a));
     }
     unsafe fn button(&self, s: &CaptureUi, a: Action, r: D2D_RECT_F) {
-        let rounded=D2D1_ROUNDED_RECT {rect:r,radiusX:9.0*s.scale,radiusY:9.0*s.scale};
-        let selected=a.tool().is_some_and(|t|t==s.tool) || a==Action::Pause && s.recording.as_ref().is_some_and(|r|r.paused);
-        let enabled=s.enabled(a);
-        if a==Action::Done {
-            self.accent.SetOpacity(if enabled {1.0}else{0.35});
-            self.target.FillRoundedRectangle(&rounded,&self.accent);
+        let rounded = D2D1_ROUNDED_RECT {
+            rect: r,
+            radiusX: 9.0 * s.scale,
+            radiusY: 9.0 * s.scale,
+        };
+        let selected = a.tool().is_some_and(|t| t == s.tool)
+            || a == Action::Pause && s.recording.as_ref().is_some_and(|r| r.paused);
+        let enabled = s.enabled(a);
+        if a == Action::Done {
+            self.accent.SetOpacity(if enabled { 1.0 } else { 0.35 });
+            self.target.FillRoundedRectangle(&rounded, &self.accent);
             self.accent.SetOpacity(1.0);
-        }else if a==Action::Stop {
-            self.tint.SetColor(&editor::color(if s.hover==Some(a) {0xf9dde5}else{0xfcecef}));
-            self.target.FillRoundedRectangle(&rounded,&self.tint);
-        }else if selected || s.hover==Some(a) {
-            self.tint.SetColor(&editor::color(if selected {0xe4ddff}else{0xece9fb}));
-            self.target.FillRoundedRectangle(&rounded,&self.tint);
+        } else if a == Action::Stop {
+            self.tint.SetColor(&editor::color(if s.hover == Some(a) {
+                0xf9dde5
+            } else {
+                0xfcecef
+            }));
+            self.target.FillRoundedRectangle(&rounded, &self.tint);
+        } else if selected || s.hover == Some(a) {
+            self.tint
+                .SetColor(&editor::color(if selected { 0xe4ddff } else { 0xece9fb }));
+            self.target.FillRoundedRectangle(&rounded, &self.tint);
             if selected {
                 self.border.SetColor(&editor::color(0xc8bbfa));
-                self.target.DrawRoundedRectangle(&rounded,&self.border,s.scale,None);
+                self.target
+                    .DrawRoundedRectangle(&rounded, &self.border, s.scale, None);
                 self.border.SetColor(&editor::color(0xe0ddeb));
             }
         }
-        self.ink.SetColor(&editor::color(if a==Action::Done {0xffffff}else if a==Action::Stop {0xc45d72}else if selected {0x5746c3}else if s.hover==Some(a) {0x6555c9}else{0x71778a}));
-        self.ink.SetOpacity(if enabled {1.0}else{0.35});
-        if a==Action::Color {
+        self.ink.SetColor(&editor::color(if a == Action::Done {
+            0xffffff
+        } else if a == Action::Stop {
+            0xc45d72
+        } else if selected {
+            0x5746c3
+        } else if s.hover == Some(a) {
+            0x6555c9
+        } else {
+            0x71778a
+        }));
+        self.ink.SetOpacity(if enabled { 1.0 } else { 0.35 });
+        if a == Action::Color {
             self.accent.SetColor(&editor::color(s.color));
-            self.target.FillEllipse(&D2D1_ELLIPSE {point:point((r.left+r.right)/2.0,(r.top+r.bottom)/2.0),radiusX:7.0*s.scale,radiusY:7.0*s.scale},&self.accent);
+            self.target.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: point((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0),
+                    radiusX: 7.0 * s.scale,
+                    radiusY: 7.0 * s.scale,
+                },
+                &self.accent,
+            );
             self.accent.SetColor(&editor::color(0x7164d7));
-        }else if a==Action::Width {
-            self.label(&format!("{}",s.width as u32),r);
-        }else {
-            let name=if a==Action::Done && s.options.kind==Kind::Recording || a==Action::Pause && s.recording.as_ref().is_some_and(|r|r.paused) {"play"}else{a.icon()};
-            self.icons.draw(&self.target,&self.ink,name,r,s.scale);
-            if a==Action::Translate {
+        } else if a == Action::Width {
+            self.label(&format!("{}", s.width as u32), r);
+        } else {
+            let name = if a == Action::Done && s.options.kind == Kind::Recording
+                || a == Action::Pause && s.recording.as_ref().is_some_and(|r| r.paused)
+            {
+                "play"
+            } else {
+                a.icon()
+            };
+            self.icons.draw(&self.target, &self.ink, name, r, s.scale);
+            if a == Action::Translate {
                 self.accent.SetColor(&editor::color(0x6555c9));
-                self.target.FillRoundedRectangle(&D2D1_ROUNDED_RECT {rect:area(r.right-12.0*s.scale,r.bottom-10.0*s.scale,12.0*s.scale,10.0*s.scale),radiusX:3.0*s.scale,radiusY:3.0*s.scale},&self.accent);
+                self.target.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: area(
+                            r.right - 12.0 * s.scale,
+                            r.bottom - 10.0 * s.scale,
+                            12.0 * s.scale,
+                            10.0 * s.scale,
+                        ),
+                        radiusX: 3.0 * s.scale,
+                        radiusY: 3.0 * s.scale,
+                    },
+                    &self.accent,
+                );
                 self.accent.SetColor(&editor::color(0x7164d7));
                 self.ink.SetColor(&editor::color(0xffffff));
-                let small=editor::text_format(7.0*s.scale,true);
-                if let Ok(small)=small {self.target.DrawText(&"AI".encode_utf16().collect::<Vec<_>>(),&small,&area(r.right-12.0*s.scale,r.bottom-10.0*s.scale,12.0*s.scale,10.0*s.scale),&self.ink,D2D1_DRAW_TEXT_OPTIONS_CLIP,DWRITE_MEASURING_MODE_NATURAL);}
+                let small = editor::text_format(7.0 * s.scale, true);
+                if let Ok(small) = small {
+                    self.target.DrawText(
+                        &"AI".encode_utf16().collect::<Vec<_>>(),
+                        &small,
+                        &area(
+                            r.right - 12.0 * s.scale,
+                            r.bottom - 10.0 * s.scale,
+                            12.0 * s.scale,
+                            10.0 * s.scale,
+                        ),
+                        &self.ink,
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             }
         }
-        self.ink.SetOpacity(1.0);self.ink.SetColor(&editor::color(0x71778a));
+        self.ink.SetOpacity(1.0);
+        self.ink.SetColor(&editor::color(0x71778a));
     }
     unsafe fn draw(&self, s: &CaptureUi) -> Result<(), String> {
         self.target.BeginDraw();
@@ -363,25 +460,86 @@ impl Renderer {
             self.target.Clear(Some(&editor::color(0xfbfaf8)));
             let width = self.target.GetPixelSize().width as f32;
             let h = self.target.GetPixelSize().height as f32;
-            self.icons.draw(&self.target,&self.ink,"drag",area(0.0,0.0,28.0*s.scale,h),s.scale);
-            let paused=s.recording.as_ref().is_some_and(|r|r.paused);
-            let state=if s.stopping {s.options.tr("正在保存…","Saving…","Guardando…")}
-                else if s.recording.is_none() {s.options.tr("准备录制…","Preparing…","Preparando…")}
-                else if s.hover==Some(Action::Stop) {s.options.tr("结束并预览","Stop and preview","Detener y ver")}
-                else if s.hover==Some(Action::Pause) {if paused {s.options.tr("继续录制","Resume","Continuar")}else{s.options.tr("暂停录制","Pause","Pausar")}}
-                else if paused {s.options.tr("已暂停","Paused","En pausa")}
-                else {s.options.tr("正在录屏","Recording","Grabando")};
-            self.accent.SetColor(&editor::color(if paused {0x9e96bc}else{0xd3556d}));
-            self.target.FillEllipse(&D2D1_ELLIPSE {point:point(39.0*s.scale,17.0*s.scale),radiusX:3.0*s.scale,radiusY:3.0*s.scale},&self.accent);
+            self.icons.draw(
+                &self.target,
+                &self.ink,
+                "drag",
+                area(0.0, 0.0, 28.0 * s.scale, h),
+                s.scale,
+            );
+            let paused = s.recording.as_ref().is_some_and(|r| r.paused);
+            let state = if s.stopping {
+                s.options.tr("正在保存…", "Saving…", "Guardando…")
+            } else if s.recording.is_none() {
+                s.options.tr("准备录制…", "Preparing…", "Preparando…")
+            } else if s.hover == Some(Action::Stop) {
+                s.options
+                    .tr("结束并预览", "Stop and preview", "Detener y ver")
+            } else if s.hover == Some(Action::Pause) {
+                if paused {
+                    s.options.tr("继续录制", "Resume", "Continuar")
+                } else {
+                    s.options.tr("暂停录制", "Pause", "Pausar")
+                }
+            } else if paused {
+                s.options.tr("已暂停", "Paused", "En pausa")
+            } else {
+                s.options.tr("正在录屏", "Recording", "Grabando")
+            };
+            self.accent
+                .SetColor(&editor::color(if paused { 0x9e96bc } else { 0xd3556d }));
+            self.target.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: point(39.0 * s.scale, 17.0 * s.scale),
+                    radiusX: 3.0 * s.scale,
+                    radiusY: 3.0 * s.scale,
+                },
+                &self.accent,
+            );
             self.accent.SetColor(&editor::color(0x7164d7));
-            self.caption(state,area(49.0*s.scale,8.0*s.scale,127.0*s.scale,17.0*s.scale),&self.body,0x71778a);
-            let seconds=s.elapsed();
-            self.caption(&format!("{:02}:{:02}",seconds/60,seconds%60),area(34.0*s.scale,26.0*s.scale,140.0*s.scale,25.0*s.scale),&self.clock,0x343a4b);
-            self.target.DrawLine(point(182.0*s.scale,12.0*s.scale),point(182.0*s.scale,h-12.0*s.scale),&self.border,s.scale,None);
+            self.caption(
+                state,
+                area(
+                    49.0 * s.scale,
+                    8.0 * s.scale,
+                    127.0 * s.scale,
+                    17.0 * s.scale,
+                ),
+                &self.body,
+                0x71778a,
+            );
+            let seconds = s.elapsed();
+            self.caption(
+                &format!("{:02}:{:02}", seconds / 60, seconds % 60),
+                area(
+                    34.0 * s.scale,
+                    26.0 * s.scale,
+                    140.0 * s.scale,
+                    25.0 * s.scale,
+                ),
+                &self.clock,
+                0x343a4b,
+            );
+            self.target.DrawLine(
+                point(182.0 * s.scale, 12.0 * s.scale),
+                point(182.0 * s.scale, h - 12.0 * s.scale),
+                &self.border,
+                s.scale,
+                None,
+            );
             for (a, r) in s.toolbar_buttons() {
                 self.button(s, a, r);
             }
-            self.target.DrawRoundedRectangle(&D2D1_ROUNDED_RECT {rect:area(1.0,1.0,width-2.0,h-2.0),radiusX:12.0*s.scale,radiusY:12.0*s.scale},&self.border,s.scale,None);
+            self.target.DrawRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: area(1.0, 1.0, width - 2.0, h - 2.0),
+                    radiusX: 12.0 * s.scale,
+                    radiusY: 12.0 * s.scale,
+                },
+                &self.border,
+                s.scale,
+                None,
+            );
         } else {
             if let Some(bitmap) = &self.bitmap {
                 self.target.DrawBitmap(
@@ -445,52 +603,147 @@ impl Renderer {
                 self.label(&format!("{} × {}", selection.width, selection.height), size);
             }
             if let Some(n) = s.counting {
-                let (cx,cy)=s.selection.map_or((w/2.0,h/2.0),|r|((r.x+r.width/2)as f32,(r.y+r.height/2)as f32));
-                let r=area((cx-52.0*s.scale).clamp(8.0,w-104.0*s.scale-8.0),(cy-58.0*s.scale).clamp(8.0,h-116.0*s.scale-8.0),104.0*s.scale,116.0*s.scale);
-                let card=D2D1_ROUNDED_RECT {rect:r,radiusX:16.0*s.scale,radiusY:16.0*s.scale};
-                self.target.FillRoundedRectangle(&card,&self.paper);
-                self.target.DrawRoundedRectangle(&card,&self.border,s.scale,None);
-                self.caption(s.options.tr("准备录制","Get ready","Preparando"),area(r.left+12.0*s.scale,r.top+12.0*s.scale,r.right-r.left-24.0*s.scale,20.0*s.scale),&self.body,0x71778a);
+                let (cx, cy) = s.selection.map_or((w / 2.0, h / 2.0), |r| {
+                    ((r.x + r.width / 2) as f32, (r.y + r.height / 2) as f32)
+                });
+                let r = area(
+                    (cx - 52.0 * s.scale).clamp(8.0, w - 104.0 * s.scale - 8.0),
+                    (cy - 58.0 * s.scale).clamp(8.0, h - 116.0 * s.scale - 8.0),
+                    104.0 * s.scale,
+                    116.0 * s.scale,
+                );
+                let card = D2D1_ROUNDED_RECT {
+                    rect: r,
+                    radiusX: 16.0 * s.scale,
+                    radiusY: 16.0 * s.scale,
+                };
+                self.target.FillRoundedRectangle(&card, &self.paper);
+                self.target
+                    .DrawRoundedRectangle(&card, &self.border, s.scale, None);
+                self.caption(
+                    s.options.tr("准备录制", "Get ready", "Preparando"),
+                    area(
+                        r.left + 12.0 * s.scale,
+                        r.top + 12.0 * s.scale,
+                        r.right - r.left - 24.0 * s.scale,
+                        20.0 * s.scale,
+                    ),
+                    &self.body,
+                    0x71778a,
+                );
                 let large = editor::text_format(48.0 * s.scale, true)?;
                 self.target.DrawText(
                     &n.to_string().encode_utf16().collect::<Vec<_>>(),
                     &large,
-                    &area(r.left,r.top+24.0*s.scale,r.right-r.left,r.bottom-r.top-24.0*s.scale),
+                    &area(
+                        r.left,
+                        r.top + 24.0 * s.scale,
+                        r.right - r.left,
+                        r.bottom - r.top - 24.0 * s.scale,
+                    ),
                     &self.accent,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
             } else if s.drag.is_none() && s.text_edit.is_none() {
-                let r=s.toolbar_rect();
-                let rect=area(r.left-4.0*s.scale,r.top-4.0*s.scale,r.right-r.left+8.0*s.scale,r.bottom-r.top+4.0*s.scale);
-                let rounded=D2D1_ROUNDED_RECT {rect,radiusX:12.0*s.scale,radiusY:12.0*s.scale};
+                let r = s.toolbar_rect();
+                let rect = area(
+                    r.left - 4.0 * s.scale,
+                    r.top - 4.0 * s.scale,
+                    r.right - r.left + 8.0 * s.scale,
+                    r.bottom - r.top + 4.0 * s.scale,
+                );
+                let rounded = D2D1_ROUNDED_RECT {
+                    rect,
+                    radiusX: 12.0 * s.scale,
+                    radiusY: 12.0 * s.scale,
+                };
                 self.target.FillRoundedRectangle(&rounded, &self.paper);
-                self.target.DrawRoundedRectangle(&rounded,&self.border,s.scale,None);
+                self.target
+                    .DrawRoundedRectangle(&rounded, &self.border, s.scale, None);
                 for (a, r) in s.buttons() {
                     self.button(s, a, r);
                 }
             }
             let hint_w = (900.0 * s.scale).min(w - 16.0);
             let hint = area((w - hint_w) / 2.0, 14.0 * s.scale, hint_w, 34.0 * s.scale);
-            let hint_card=D2D1_ROUNDED_RECT {rect:hint,radiusX:10.0*s.scale,radiusY:10.0*s.scale};
-            self.target.FillRoundedRectangle(&hint_card,&self.paper);
-            self.target.DrawRoundedRectangle(&hint_card,&self.border,s.scale,None);
+            let hint_card = D2D1_ROUNDED_RECT {
+                rect: hint,
+                radiusX: 10.0 * s.scale,
+                radiusY: 10.0 * s.scale,
+            };
+            self.target.FillRoundedRectangle(&hint_card, &self.paper);
+            self.target
+                .DrawRoundedRectangle(&hint_card, &self.border, s.scale, None);
             self.label(&s.hint(), hint);
             if s.panel_open {
-                let r=s.panel_rect();
-                let rounded=D2D1_ROUNDED_RECT {rect:r,radiusX:12.0*s.scale,radiusY:12.0*s.scale};
-                self.target.FillRoundedRectangle(&rounded,&self.paper);
-                self.target.DrawRoundedRectangle(&rounded,&self.border,s.scale,None);
-                self.icons.draw(&self.target,&self.ink,if s.translate {"translate"}else{"ocr"},area(r.left+10.0*s.scale,r.top+8.0*s.scale,26.0*s.scale,26.0*s.scale),s.scale);
-                self.caption(s.options.tr("文字结果","Text results","Resultados de texto"),area(r.left+42.0*s.scale,r.top+12.0*s.scale,r.right-r.left-140.0*s.scale,22.0*s.scale),&self.body,0x343a4b);
-                for (translated,body) in s.result_panes() {
-                    let title=if translated {s.options.tr("译文 · AI","Translation · AI","Traducción · IA")}else{s.options.tr("原文 · 本地识别","Original · Local OCR","Original · OCR local")};
-                    self.caption(title,area(body.left,body.top-24.0*s.scale,body.right-body.left-34.0*s.scale,22.0*s.scale),&self.body,0x71778a);
-                    let card=D2D1_ROUNDED_RECT {rect:body,radiusX:8.0*s.scale,radiusY:8.0*s.scale};
-                    self.target.FillRoundedRectangle(&card,&self.white);
-                    self.target.DrawRoundedRectangle(&card,&self.border,s.scale,None);
+                let r = s.panel_rect();
+                let rounded = D2D1_ROUNDED_RECT {
+                    rect: r,
+                    radiusX: 12.0 * s.scale,
+                    radiusY: 12.0 * s.scale,
+                };
+                self.target.FillRoundedRectangle(&rounded, &self.paper);
+                self.target
+                    .DrawRoundedRectangle(&rounded, &self.border, s.scale, None);
+                self.icons.draw(
+                    &self.target,
+                    &self.ink,
+                    if s.translate { "translate" } else { "ocr" },
+                    area(
+                        r.left + 10.0 * s.scale,
+                        r.top + 8.0 * s.scale,
+                        26.0 * s.scale,
+                        26.0 * s.scale,
+                    ),
+                    s.scale,
+                );
+                self.caption(
+                    s.options
+                        .tr("文字结果", "Text results", "Resultados de texto"),
+                    area(
+                        r.left + 42.0 * s.scale,
+                        r.top + 12.0 * s.scale,
+                        r.right - r.left - 140.0 * s.scale,
+                        22.0 * s.scale,
+                    ),
+                    &self.body,
+                    0x343a4b,
+                );
+                for (translated, body) in s.result_panes() {
+                    let title = if translated {
+                        s.options
+                            .tr("译文 · AI", "Translation · AI", "Traducción · IA")
+                    } else {
+                        s.options.tr(
+                            "原文 · 本地识别",
+                            "Original · Local OCR",
+                            "Original · OCR local",
+                        )
+                    };
+                    self.caption(
+                        title,
+                        area(
+                            body.left,
+                            body.top - 24.0 * s.scale,
+                            body.right - body.left - 34.0 * s.scale,
+                            22.0 * s.scale,
+                        ),
+                        &self.body,
+                        0x71778a,
+                    );
+                    let card = D2D1_ROUNDED_RECT {
+                        rect: body,
+                        radiusX: 8.0 * s.scale,
+                        radiusY: 8.0 * s.scale,
+                    };
+                    self.target.FillRoundedRectangle(&card, &self.white);
+                    self.target
+                        .DrawRoundedRectangle(&card, &self.border, s.scale, None);
                 }
-                for (a,b) in s.panel_buttons(){self.button(s,a,b);}
+                for (a, b) in s.panel_buttons() {
+                    self.button(s, a, b);
+                }
             }
         }
         self.target.EndDraw(None, None).map_err(|e| e.to_string())
@@ -638,20 +891,59 @@ impl CaptureUi {
             })
             .collect()
     }
-    fn toolbar_buttons(&self) -> Vec<(Action,D2D_RECT_F)> {
-        vec![(Action::Pause,area(198.0*self.scale,10.0*self.scale,36.0*self.scale,36.0*self.scale)),
-             (Action::Stop,area(242.0*self.scale,10.0*self.scale,36.0*self.scale,36.0*self.scale))]
+    fn toolbar_buttons(&self) -> Vec<(Action, D2D_RECT_F)> {
+        vec![
+            (
+                Action::Pause,
+                area(
+                    198.0 * self.scale,
+                    10.0 * self.scale,
+                    36.0 * self.scale,
+                    36.0 * self.scale,
+                ),
+            ),
+            (
+                Action::Stop,
+                area(
+                    242.0 * self.scale,
+                    10.0 * self.scale,
+                    36.0 * self.scale,
+                    36.0 * self.scale,
+                ),
+            ),
+        ]
     }
-    fn dual_result(&self)->bool {self.translate && self.options.auto_ocr && self.options.auto_translate}
-    fn result_panes(&self)->Vec<(bool,D2D_RECT_F)> {
-        let p=self.panel_rect();
-        let kinds=if self.dual_result(){vec![false,true]}else{vec![self.translate]};
-        kinds.into_iter().enumerate().map(|(i,tr)|(tr,area(p.left+12.0*self.scale,p.top+(68.0+i as f32*140.0)*self.scale,p.right-p.left-24.0*self.scale,104.0*self.scale))).collect()
+    fn dual_result(&self) -> bool {
+        self.translate && self.options.auto_ocr && self.options.auto_translate
+    }
+    fn result_panes(&self) -> Vec<(bool, D2D_RECT_F)> {
+        let p = self.panel_rect();
+        let kinds = if self.dual_result() {
+            vec![false, true]
+        } else {
+            vec![self.translate]
+        };
+        kinds
+            .into_iter()
+            .enumerate()
+            .map(|(i, tr)| {
+                (
+                    tr,
+                    area(
+                        p.left + 12.0 * self.scale,
+                        p.top + (68.0 + i as f32 * 140.0) * self.scale,
+                        p.right - p.left - 24.0 * self.scale,
+                        104.0 * self.scale,
+                    ),
+                )
+            })
+            .collect()
     }
     fn panel_rect(&self) -> D2D_RECT_F {
         let bar = self.toolbar_rect();
         let w = (500.0 * self.scale).min(self.frame.width as f32 - 24.0);
-        let h = ((if self.dual_result(){324.0}else{184.0}) * self.scale).min(self.frame.height as f32 - 100.0 * self.scale);
+        let h = ((if self.dual_result() { 324.0 } else { 184.0 }) * self.scale)
+            .min(self.frame.height as f32 - 100.0 * self.scale);
         let x = bar.left.min(self.frame.width as f32 - w - 8.0).max(8.0);
         let below = bar.bottom + 8.0 * self.scale;
         let y = if below + h < self.frame.height as f32 {
@@ -661,12 +953,89 @@ impl CaptureUi {
         };
         area(x, y, w, h)
     }
-    fn panel_buttons(&self)->Vec<(Action,D2D_RECT_F)> {
-        let p=self.panel_rect();
-        let mut buttons=vec![(Action::ClosePanel,area(p.right-36.0*self.scale,p.top+8.0*self.scale,26.0*self.scale,26.0*self.scale))];
-        if !self.translate && self.options.ai_enabled {buttons.push((Action::Translate,area(p.right-70.0*self.scale,p.top+8.0*self.scale,26.0*self.scale,26.0*self.scale)));}
-        for (tr,r) in self.result_panes(){buttons.push((if tr {Action::CopyTranslation}else{Action::CopyText},area(r.right-26.0*self.scale,r.top-27.0*self.scale,26.0*self.scale,26.0*self.scale)));}
+    fn panel_buttons(&self) -> Vec<(Action, D2D_RECT_F)> {
+        let p = self.panel_rect();
+        let mut buttons = vec![(
+            Action::ClosePanel,
+            area(
+                p.right - 36.0 * self.scale,
+                p.top + 8.0 * self.scale,
+                26.0 * self.scale,
+                26.0 * self.scale,
+            ),
+        )];
+        if !self.translate && self.options.ai_enabled {
+            buttons.push((
+                Action::Translate,
+                area(
+                    p.right - 70.0 * self.scale,
+                    p.top + 8.0 * self.scale,
+                    26.0 * self.scale,
+                    26.0 * self.scale,
+                ),
+            ));
+        }
+        for (tr, r) in self.result_panes() {
+            buttons.push((
+                if tr {
+                    Action::CopyTranslation
+                } else {
+                    Action::CopyText
+                },
+                area(
+                    r.right - 26.0 * self.scale,
+                    r.top - 27.0 * self.scale,
+                    26.0 * self.scale,
+                    26.0 * self.scale,
+                ),
+            ));
+        }
         buttons
+    }
+    fn action_at(&self, p: (i32, i32)) -> Option<Action> {
+        let buttons = if self.toolbar {
+            self.toolbar_buttons()
+        } else if self.panel_open && hit(self.panel_rect(), p) {
+            self.panel_buttons()
+        } else {
+            self.buttons()
+        };
+        buttons
+            .into_iter()
+            .find(|(_, r)| hit(*r, p))
+            .map(|(a, _)| a)
+    }
+    fn cursor_at(&self, p: (i32, i32)) -> PCWSTR {
+        // Keep the drawing cursor while captured, even when a drag crosses the toolbar.
+        if self.drag.is_some() || self.draft.is_some() {
+            return IDC_CROSS;
+        }
+        if self.counting.is_some() {
+            return IDC_ARROW;
+        }
+        if let Some(action) = self.action_at(p) {
+            return if self.enabled(action) {
+                IDC_HAND
+            } else {
+                IDC_ARROW
+            };
+        }
+        if self.toolbar {
+            return if p.0 < (182.0 * self.scale) as i32 {
+                IDC_SIZEALL
+            } else {
+                IDC_ARROW
+            };
+        }
+        if hit(self.toolbar_rect(), p) || (self.panel_open && hit(self.panel_rect(), p)) {
+            return IDC_ARROW;
+        }
+        IDC_CROSS
+    }
+    unsafe fn update_cursor(&self, p: (i32, i32)) {
+        if let Ok(cursor) = LoadCursorW(None, self.cursor_at(p)) {
+            SetCursor(Some(cursor));
+        }
     }
     fn hint(&self) -> String {
         if let Some(s) = &self.notice {
@@ -676,7 +1045,14 @@ impl CaptureUi {
             return a.label(&self.options).into();
         }
         if self.options.kind == Kind::Recording {
-            return self.options.tr("拖动框选 · Enter 开始倒计时 · Esc 取消", "Drag to select · Enter countdown · Esc cancel", "Arrastra para seleccionar · Enter cuenta atrás · Esc cancelar").into();
+            return self
+                .options
+                .tr(
+                    "拖动框选 · Enter 开始倒计时 · Esc 取消",
+                    "Drag to select · Enter countdown · Esc cancel",
+                    "Arrastra para seleccionar · Enter cuenta atrás · Esc cancelar",
+                )
+                .into();
         }
         self.options.tr("拖动框选 · V 调整 · Ctrl+Z 撤销 · Enter 完成 · Esc 取消","Drag to select · V adjust · Ctrl+Z undo · Enter finish · Esc cancel","Arrastra para seleccionar · V ajustar · Ctrl+Z deshacer · Enter finalizar · Esc cancelar").into()
     }
@@ -708,7 +1084,9 @@ impl CaptureUi {
         self.ocr_error.clear();
         self.loading = false;
         self.panel_open = false;
-        for edit in [self.panel_edit,self.panel_edit2].into_iter().flatten() {let _=ShowWindow(edit,SW_HIDE);}
+        for edit in [self.panel_edit, self.panel_edit2].into_iter().flatten() {
+            let _ = ShowWindow(edit, SW_HIDE);
+        }
         let _ = KillTimer(Some(hwnd), OCR_TIMER);
     }
     unsafe fn schedule_ocr(&self, hwnd: HWND) {
@@ -782,27 +1160,95 @@ impl CaptureUi {
         let _ = SetFocus(Some(edit));
         Ok(())
     }
-    unsafe fn create_result_edit(&mut self,hwnd:HWND)->Result<HWND,String> {
-        let edit=CreateWindowExW(WINDOW_EX_STYLE(0),w!("EDIT"),w!(""),WS_CHILD|WS_VSCROLL|WINDOW_STYLE((ES_MULTILINE|ES_AUTOVSCROLL|ES_READONLY)as u32),0,0,100,100,Some(hwnd),None,None,None).map_err(|e|e.to_string())?;
-        let font=*self.panel_font.get_or_insert_with(||font((13.0*self.scale)as i32));
-        SendMessageW(edit,WM_SETFONT,Some(WPARAM(font.0 as usize)),Some(LPARAM(1)));
-        SendMessageW(edit,EM_SETLIMITTEXT,Some(WPARAM(100_000)),Some(LPARAM(0)));
+    unsafe fn create_result_edit(&mut self, hwnd: HWND) -> Result<HWND, String> {
+        let edit = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("EDIT"),
+            w!(""),
+            WS_CHILD
+                | WS_VSCROLL
+                | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY) as u32),
+            0,
+            0,
+            100,
+            100,
+            Some(hwnd),
+            None,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        let font = *self
+            .panel_font
+            .get_or_insert_with(|| font((13.0 * self.scale) as i32));
+        SendMessageW(
+            edit,
+            WM_SETFONT,
+            Some(WPARAM(font.0 as usize)),
+            Some(LPARAM(1)),
+        );
+        SendMessageW(
+            edit,
+            EM_SETLIMITTEXT,
+            Some(WPARAM(100_000)),
+            Some(LPARAM(0)),
+        );
         Ok(edit)
     }
-    unsafe fn update_panel(&mut self,hwnd:HWND)->Result<(),String> {
-        for edit in [self.panel_edit,self.panel_edit2].into_iter().flatten(){let _=ShowWindow(edit,SW_HIDE);}
-        if !self.panel_open{return Ok(());}
-        if self.panel_edit.is_none(){self.panel_edit=Some(self.create_result_edit(hwnd)?);}
-        if self.dual_result() && self.panel_edit2.is_none(){self.panel_edit2=Some(self.create_result_edit(hwnd)?);}
-        for (i,(translated,r)) in self.result_panes().into_iter().enumerate(){
-            let value=if self.loading {self.options.tr("正在识别 / 翻译…","Recognizing / translating…","Reconociendo / traduciendo…").to_string()}
-                else if !self.ocr_error.is_empty() && (translated||self.recognized.is_empty()){self.ocr_error.clone()}
-                else if self.recognized.is_empty(){self.options.tr("未识别到文字，可调整选区后重新识别","No text found. Adjust the selection and retry.","No se encontró texto. Ajusta la selección e inténtalo de nuevo.").into()}
-                else if translated {self.translated.clone()}else{self.recognized.clone()};
-            let edit=if i==0{self.panel_edit.unwrap()}else{self.panel_edit2.unwrap()};
-            SetWindowTextW(edit,&HSTRING::from(value)).map_err(|e|e.to_string())?;
-            SetWindowPos(edit,None,(r.left+8.0*self.scale)as i32,(r.top+8.0*self.scale)as i32,(r.right-r.left-16.0*self.scale)as i32,(r.bottom-r.top-16.0*self.scale)as i32,SWP_NOACTIVATE|SWP_NOZORDER).map_err(|e|e.to_string())?;
-            let _=ShowWindow(edit,SW_SHOWNOACTIVATE);
+    unsafe fn update_panel(&mut self, hwnd: HWND) -> Result<(), String> {
+        for edit in [self.panel_edit, self.panel_edit2].into_iter().flatten() {
+            let _ = ShowWindow(edit, SW_HIDE);
+        }
+        if !self.panel_open {
+            return Ok(());
+        }
+        if self.panel_edit.is_none() {
+            self.panel_edit = Some(self.create_result_edit(hwnd)?);
+        }
+        if self.dual_result() && self.panel_edit2.is_none() {
+            self.panel_edit2 = Some(self.create_result_edit(hwnd)?);
+        }
+        for (i, (translated, r)) in self.result_panes().into_iter().enumerate() {
+            let value = if self.loading {
+                self.options
+                    .tr(
+                        "正在识别 / 翻译…",
+                        "Recognizing / translating…",
+                        "Reconociendo / traduciendo…",
+                    )
+                    .to_string()
+            } else if !self.ocr_error.is_empty() && (translated || self.recognized.is_empty()) {
+                self.ocr_error.clone()
+            } else if self.recognized.is_empty() {
+                self.options
+                    .tr(
+                        "未识别到文字，可调整选区后重新识别",
+                        "No text found. Adjust the selection and retry.",
+                        "No se encontró texto. Ajusta la selección e inténtalo de nuevo.",
+                    )
+                    .into()
+            } else if translated {
+                self.translated.clone()
+            } else {
+                self.recognized.clone()
+            };
+            let edit = if i == 0 {
+                self.panel_edit.unwrap()
+            } else {
+                self.panel_edit2.unwrap()
+            };
+            SetWindowTextW(edit, &HSTRING::from(value)).map_err(|e| e.to_string())?;
+            SetWindowPos(
+                edit,
+                None,
+                (r.left + 8.0 * self.scale) as i32,
+                (r.top + 8.0 * self.scale) as i32,
+                (r.right - r.left - 16.0 * self.scale) as i32,
+                (r.bottom - r.top - 16.0 * self.scale) as i32,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+            .map_err(|e| e.to_string())?;
+            let _ = ShowWindow(edit, SW_SHOWNOACTIVATE);
         }
         Ok(())
     }
@@ -844,7 +1290,12 @@ impl CaptureUi {
         self.toolbar = true;
         self.panel_open = false;
         self.commit_text(hwnd);
-        for edit in [self.panel_edit.take(),self.panel_edit2.take()].into_iter().flatten(){let _=DestroyWindow(edit);}
+        for edit in [self.panel_edit.take(), self.panel_edit2.take()]
+            .into_iter()
+            .flatten()
+        {
+            let _ = DestroyWindow(edit);
+        }
         self.border = Some(recording_border(&self.frame, s, self.scale)?);
         SetWindowPos(
             hwnd,
@@ -865,8 +1316,17 @@ impl CaptureUi {
                 })
                 .map_err(|e| e.to_string())?;
         }
-        let rounded=CreateRoundRectRgn(0,0,(292.0*self.scale).ceil()as i32+1,(56.0*self.scale).ceil()as i32+1,(24.0*self.scale)as i32,(24.0*self.scale)as i32);
-        if !rounded.is_invalid() && SetWindowRgn(hwnd,Some(rounded),true)==0 {let _=DeleteObject(HGDIOBJ(rounded.0));}
+        let rounded = CreateRoundRectRgn(
+            0,
+            0,
+            (292.0 * self.scale).ceil() as i32 + 1,
+            (56.0 * self.scale).ceil() as i32 + 1,
+            (24.0 * self.scale) as i32,
+            (24.0 * self.scale) as i32,
+        );
+        if !rounded.is_invalid() && SetWindowRgn(hwnd, Some(rounded), true) == 0 {
+            let _ = DeleteObject(HGDIOBJ(rounded.0));
+        }
         self.frame.bgra = Vec::new();
         if let Some(r) = &self.renderer {
             r.draw(self)?;
@@ -1106,6 +1566,9 @@ impl CaptureUi {
                 Message::Recording(status) => {
                     self.record_pending = false;
                     if status.active {
+                        if status.paused && self.recording.as_ref().is_some_and(|r| !r.paused) {
+                            self.frozen_seconds = self.elapsed();
+                        }
                         self.recording = Some(status);
                         if self.stopping {
                             self.stopping = false;
@@ -1299,19 +1762,7 @@ impl CaptureUi {
             }
             self.repaint(hwnd);
         } else {
-            let buttons = if self.toolbar {
-                self.toolbar_buttons()
-            } else {
-                let mut v = self.buttons();
-                if self.panel_open {
-                    v.extend(self.panel_buttons());
-                }
-                v
-            };
-            let hover = buttons
-                .into_iter()
-                .find(|(_, r)| hit(*r, p))
-                .map(|(a, _)| a);
+            let hover = self.action_at(p);
             if hover != self.hover {
                 self.hover = hover;
                 self.repaint(hwnd);
@@ -1367,6 +1818,15 @@ unsafe extern "system" fn procedure(
         ((lparam.0 >> 16) as u16 as i16) as i32,
     );
     match msg {
+        WM_SETCURSOR if wparam.0 == hwnd.0 as usize && lparam.0 as u16 == HTCLIENT as u16 => {
+            let mut position = POINT::default();
+            if GetCursorPos(&mut position).is_ok() && ScreenToClient(hwnd, &mut position).as_bool()
+            {
+                s.update_cursor((position.x, position.y));
+                return LRESULT(1);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             BeginPaint(hwnd, &mut ps);
@@ -1393,14 +1853,26 @@ unsafe extern "system" fn procedure(
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
-            let edit=HWND(lparam.0 as *mut _);
-            if s.panel_edit==Some(edit)||s.panel_edit2==Some(edit)||s.text_edit==Some(edit){
-                let dc=HDC(wparam.0 as *mut _);
-                let rgb=if s.text_edit==Some(edit){s.color}else{0x343a4b};
-                SetTextColor(dc,COLORREF(((rgb>>16)&255)|(rgb&0xff00)|((rgb&255)<<16)));
-                SetBkColor(dc,COLORREF(0xffffff));
+            let edit = HWND(lparam.0 as *mut _);
+            if s.panel_edit == Some(edit)
+                || s.panel_edit2 == Some(edit)
+                || s.text_edit == Some(edit)
+            {
+                let dc = HDC(wparam.0 as *mut _);
+                let rgb = if s.text_edit == Some(edit) {
+                    s.color
+                } else {
+                    0x343a4b
+                };
+                SetTextColor(
+                    dc,
+                    COLORREF(((rgb >> 16) & 255) | (rgb & 0xff00) | ((rgb & 255) << 16)),
+                );
+                SetBkColor(dc, COLORREF(0xffffff));
                 LRESULT(GetStockObject(WHITE_BRUSH).0 as isize)
-            }else{DefWindowProcW(hwnd,msg,wparam,lparam)}
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
         WM_LBUTTONDOWN => {
             if let Err(e) = s.pointer_down(hwnd, p) {
@@ -1409,14 +1881,26 @@ unsafe extern "system" fn procedure(
             }
             LRESULT(0)
         }
-        WM_MOUSELEAVE => {s.hover=None;s.repaint(hwnd);LRESULT(0)}
+        WM_MOUSELEAVE => {
+            s.hover = None;
+            s.repaint(hwnd);
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
-            let _=TrackMouseEvent(&mut TRACKMOUSEEVENT {cbSize:std::mem::size_of::<TRACKMOUSEEVENT>()as u32,dwFlags:TME_LEAVE,hwndTrack:hwnd,dwHoverTime:0});
+            let _ = TrackMouseEvent(&mut TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            });
             s.pointer_move(hwnd, p);
+            // WM_SETCURSOR is not sent while this window owns mouse capture.
+            s.update_cursor(p);
             LRESULT(0)
         }
         WM_LBUTTONUP => {
             s.pointer_up(hwnd, p);
+            s.update_cursor(p);
             LRESULT(0)
         }
         WM_LBUTTONDBLCLK => {
@@ -1588,7 +2072,7 @@ pub fn run_editor(app: AppHandle, options: Options) -> Result<NativeCaptureResul
                     style: CS_DBLCLKS,
                     lpfnWndProc: Some(procedure),
                     hInstance: instance,
-                    hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
+                    hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
                     lpszClassName: w!("MyAssistantNativeCapture"),
                     ..Default::default()
                 });
@@ -1702,7 +2186,10 @@ pub fn run_editor(app: AppHandle, options: Options) -> Result<NativeCaptureResul
                     state.borrow().repaint(window.0);
                     continue;
                 }
-                if (state.borrow().panel_edit == Some(msg.hwnd) || state.borrow().panel_edit2 == Some(msg.hwnd)) && msg.wParam.0 == 27 {
+                if (state.borrow().panel_edit == Some(msg.hwnd)
+                    || state.borrow().panel_edit2 == Some(msg.hwnd))
+                    && msg.wParam.0 == 27
+                {
                     state.borrow_mut().close(window.0);
                     continue;
                 }
